@@ -83,10 +83,52 @@ func TestConsumerPact(t *testing.T) {
 }
 ```
 
-### TypeScript/JavaScript (pact-js with V3 spec)
+### JavaScript (pact-js with V3 spec)
+```javascript
+import path from 'path';
+import { PactV3, MatchersV3 } from "@pact-foundation/pact";
+import { yourConsumerFunction } from "../src/consumer.js";
+import { describe, test, expect } from "@jest/globals";
+
+const provider = new PactV3({
+    dir: path.resolve(process.cwd(), 'pacts'),
+    consumer: 'ConsumerService',
+    provider: 'ProviderService',
+});
+
+describe('Consumer Pact Tests', () => {
+    test('should get resource', async () => {
+        provider
+            .given('a resource exists')
+            .uponReceiving('a request for resource')
+            .withRequest({
+                method: 'GET',
+                path: '/resource/123',
+            })
+            .willRespondWith({
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+                body: {
+                    id: MatchersV3.integer(123),
+                    name: MatchersV3.string('example'),
+                },
+            });
+
+        await provider.executeTest(async (mockProvider) => {
+            // IMPORTANT: Call the actual consumer function from src/consumer.js
+            const result = await yourConsumerFunction(mockProvider.url);
+            expect(result).toBeDefined();
+            expect(result.id).toBe(123);
+        });
+    });
+});
+```
+
+### TypeScript (pact-js with V3 spec)
 ```typescript
 import { PactV3, MatchersV3 } from '@pact-foundation/pact';
 import path from 'path';
+import { yourConsumerFunction } from '../src/consumer';
 
 const { eachLike, like, integer, string } = MatchersV3;
 
@@ -115,8 +157,8 @@ describe('Consumer Pact Tests', () => {
             });
 
         await provider.executeTest(async (mockProvider) => {
-            const client = new ApiClient(mockProvider.url);
-            const result = await client.getResource('123');
+            // IMPORTANT: Call the actual consumer function from src/consumer.ts
+            const result = await yourConsumerFunction(mockProvider.url);
             expect(result).toBeDefined();
             expect(result.id).toBe(123);
         });
@@ -276,10 +318,18 @@ Include parameters when needed:
 
 1. ALWAYS handle errors properly (require.NoError, assert.NoError, assertNotNull)
 2. ALWAYS use matchers instead of hardcoded values
-3. ALWAYS test with actual client code inside ExecuteTest/executeTest
-4. NEVER use deprecated patterns (Verify() instead of ExecuteTest())
-5. NEVER generate provider verification tests - only consumer tests
-6. ALWAYS include proper imports for the language
+3. ALWAYS test with actual consumer functions from the codebase (e.g., import from src/consumer.js or src/consumer.ts)
+4. NEVER create fake client classes like "ApiClient" - use the existing consumer functions from the repository
+5. NEVER use deprecated patterns (Verify() instead of ExecuteTest())
+6. NEVER generate provider verification tests - only consumer tests
+7. ALWAYS include proper imports for the language
+8. For JavaScript: use .pact.test.js extension, import from "@jest/globals" for describe/test/expect
+9. For TypeScript: use .pact.spec.ts extension
+
+## CRITICAL: Consumer Function Usage
+- Look at the PR context for existing consumer functions (e.g., getItem, createItem, getUserById, searchItems)
+- Import and use these ACTUAL functions inside executeTest/ExecuteTest
+- DO NOT invent fake API client classes - the consumer functions already exist in src/consumer.js or similar
 
 ## Output Format
 You must respond with valid JSON matching the required schema. Do not include any text outside the JSON object.
@@ -435,6 +485,12 @@ Analyze the following Pull Request and generate Pact consumer contract tests if 
 - Derive consumer name from: the repository name or service making the API call
 - Derive provider name from: the API being called (often from OpenAPI spec title or base URL)
 - If unclear, use descriptive names based on the PR context
+
+## CRITICAL: Use Existing Consumer Functions
+- Look at the consumer code in the context (src/consumer.js, src/consumer.ts, etc.)
+- Import and call the ACTUAL consumer functions (e.g., getUserById, searchItems, getItem) inside executeTest
+- DO NOT create fake ApiClient classes - use the functions that already exist in the codebase
+- Match the import style of the existing test files if provided in context
 
 Respond with valid JSON only, matching the required schema.
 """

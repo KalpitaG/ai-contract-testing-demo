@@ -34,9 +34,9 @@ language_detection:
       confidence: "high"
 
     - file: "package.json"
-      language: "typescript"
+      language: "javascript"
       confidence: "medium"
-      # Note: Could be JavaScript - check tsconfig.json first for TypeScript
+      # Note: If tsconfig.json exists, TypeScript will be detected first (higher priority)
 
     - file: "pom.xml"
       language: "java"
@@ -87,6 +87,45 @@ language_detection:
             })
             // ... test implementation
         }
+
+    javascript:
+      package: "@pact-foundation/pact"
+      import_statement: |
+        import { PactV3, MatchersV3 } from "@pact-foundation/pact";
+        import { describe, test, expect } from "@jest/globals";
+      test_framework: "jest"
+      file_extension: ".pact.test.js"
+      file_naming: "kebab-case"
+      example_test_structure: |
+        import path from 'path';
+        import { PactV3, MatchersV3 } from "@pact-foundation/pact";
+        import { yourConsumerFunction } from "../src/consumer.js";
+        import { describe, test, expect } from "@jest/globals";
+
+        const provider = new PactV3({
+            dir: path.resolve(process.cwd(), 'pacts'),
+            consumer: 'ConsumerName',
+            provider: 'ProviderName',
+        });
+
+        describe('Consumer Pact Tests', () => {
+            test('should do something', async () => {
+                provider
+                    .given('some state')
+                    .uponReceiving('a request')
+                    .withRequest({ method: 'GET', path: '/resource' })
+                    .willRespondWith({
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' },
+                        body: { id: MatchersV3.integer(1) }
+                    });
+
+                await provider.executeTest(async (mockProvider) => {
+                    const result = await yourConsumerFunction(mockProvider.url);
+                    expect(result).toBeDefined();
+                });
+            });
+        });
 
     typescript:
       package: "@pact-foundation/pact"
