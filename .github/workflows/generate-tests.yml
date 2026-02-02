@@ -1,11 +1,12 @@
 # =============================================================================
-# AI Contract Test Generation - Reusable Workflow
+# AI Contract Test Generation - WITH TEST VALIDATION
 # =============================================================================
-# This workflow is called by consumer repos to generate Pact contract tests.
-# It lives in the central ai-contract-testing-demo repo.
 #
-# Usage from consumer repo:
-#   uses: KalpitaG/ai-contract-testing-demo/.github/workflows/generate-tests.yml@main
+# FLOW:
+#   1. Generate tests with AI
+#   2. Run tests to validate
+#   3. If FAIL → Retry with error feedback (max 2 retries)
+#   4. Create PR with status (✅ validated OR ⚠️ needs review)
 #
 # =============================================================================
 
@@ -23,9 +24,14 @@ on:
         required: true
         type: number
       target_repo:
-        description: 'Repository where tests should be created (usually same as repository)'
+        description: 'Repository where tests should be created'
         required: true
         type: string
+      max_retries:
+        description: 'Maximum retry attempts if tests fail (default: 2)'
+        required: false
+        type: number
+        default: 2
     secrets:
       GEMINI_API_KEY:
         required: true
@@ -35,33 +41,21 @@ on:
         required: true
       PAT_TOKEN:
         required: true
-        description: 'Personal Access Token with repo scope for creating PRs'
       LANGFUSE_PUBLIC_KEY:
         required: false
       LANGFUSE_SECRET_KEY:
         required: false
-      JIRA_BASE_URL:
-        required: false
-      JIRA_EMAIL:
-        required: false
-      JIRA_API_TOKEN:
-        required: false
 
 jobs:
-  generate-tests:
-    name: Generate Contract Tests
+  generate-validate-pr:
+    name: Generate, Validate & Create PR
     runs-on: ubuntu-latest
     
-    outputs:
-      tests_generated: ${{ steps.run-pipeline.outputs.tests_generated }}
-      test_pr_url: ${{ steps.create-pr.outputs.pr_url }}
-      skip_reason: ${{ steps.run-pipeline.outputs.skip_reason }}
-    
     steps:
-      # -----------------------------------------------------------------------
-      # Setup
-      # -----------------------------------------------------------------------
-      - name: Checkout central repo (ai-contract-testing-demo)
+      # =====================================================================
+      # SETUP
+      # =====================================================================
+      - name: Checkout central repo
         uses: actions/checkout@v4
         with:
           repository: KalpitaG/ai-contract-testing-demo
@@ -74,7 +68,7 @@ jobs:
           repository: ${{ inputs.target_repo }}
           token: ${{ secrets.PAT_TOKEN }}
           path: target-repo
-          fetch-depth: 0  # Full history for branch creation
+          fetch-depth: 0
       
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -83,222 +77,218 @@ jobs:
           cache: 'pip'
           cache-dependency-path: ai-contract-testing/requirements.txt
       
-      - name: Install dependencies
-        run: |
-          cd ai-contract-testing
-          pip install -r requirements.txt
+      - name: Set up Node.js 18 (for JS/TS tests)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+        continue-on-error: true
       
-      # -----------------------------------------------------------------------
-      # Run AI Pipeline
-      # -----------------------------------------------------------------------
-      - name: Run AI Contract Test Pipeline
-        id: run-pipeline
+      - name: Install Python dependencies
+        run: |
+          pip install -r ai-contract-testing/requirements.txt
+      
+      - name: Install target repo dependencies
+        working-directory: target-repo
+        run: |
+          if [ -f "package.json" ]; then
+            echo "Installing npm dependencies..."
+            npm install
+          elif [ -f "go.mod" ]; then
+            echo "Downloading Go modules..."
+            go mod download
+          elif [ -f "requirements.txt" ]; then
+            echo "Installing pip dependencies..."
+            pip install -r requirements.txt
+          fi
+        continue-on-error: true
+      
+      # =====================================================================
+      # GENERATE & VALIDATE (with retry loop)
+      # =====================================================================
+      - name: Generate and Validate Tests
+        id: validate
         env:
-          # Required
           GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: gemini-2.0-flash
           PACTFLOW_TOKEN: ${{ secrets.PACTFLOW_TOKEN }}
           PACTFLOW_BASE_URL: ${{ secrets.PACTFLOW_BASE_URL }}
-          # Optional - Langfuse
           LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
           LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
           LANGFUSE_HOST: https://cloud.langfuse.com
-          # Optional - JIRA
-          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
-          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
-          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
-          # Pipeline config
-          TARGET_REPO_PATH: ${{ github.workspace }}/target-repo
+          MAX_RETRIES: ${{ inputs.max_retries }}
         run: |
           cd ai-contract-testing
           
-          # Run the pipeline and capture output
-          python -m src.pipeline \
-            ${{ inputs.repository }} \
-            ${{ inputs.pr_number }} \
-            --output-dir ../generated-tests \
-            2>&1 | tee pipeline-output.log
+          # Run the validation loop
+          python -m src.github_ops.workflow_runner \
+            --repo "${{ inputs.repository }}" \
+            --pr "${{ inputs.pr_number }}" \
+            --target-repo "../target-repo" \
+            --max-retries "$MAX_RETRIES" \
+            --output-json "../validation-result.json"
           
-          # Check if tests were generated
-          if [ -d "../generated-tests" ] && [ "$(ls -A ../generated-tests 2>/dev/null)" ]; then
-            echo "tests_generated=true" >> $GITHUB_OUTPUT
-            echo "Tests were generated successfully"
+          # Read results
+          if [ -f "../validation-result.json" ]; then
+            echo "tests_validated=$(jq -r '.tests_pass' ../validation-result.json)" >> $GITHUB_OUTPUT
+            echo "attempts=$(jq -r '.attempts' ../validation-result.json)" >> $GITHUB_OUTPUT
+            echo "language=$(jq -r '.language' ../validation-result.json)" >> $GITHUB_OUTPUT
+            echo "tests_generated=$(jq -r '.has_tests' ../validation-result.json)" >> $GITHUB_OUTPUT
+            echo "skip_reason=$(jq -r '.skip_reason // empty' ../validation-result.json)" >> $GITHUB_OUTPUT
           else
+            echo "tests_validated=false" >> $GITHUB_OUTPUT
             echo "tests_generated=false" >> $GITHUB_OUTPUT
-            # Try to extract skip reason from log
-            SKIP_REASON=$(grep -oP 'Skipping: \K.*' pipeline-output.log || echo "No tests generated")
-            echo "skip_reason=${SKIP_REASON}" >> $GITHUB_OUTPUT
           fi
       
-      # -----------------------------------------------------------------------
-      # Create PR with Generated Tests
-      # -----------------------------------------------------------------------
-      - name: Create PR with Generated Tests
+      # =====================================================================
+      # CREATE PR
+      # =====================================================================
+      - name: Create PR with Tests
         id: create-pr
-        if: steps.run-pipeline.outputs.tests_generated == 'true'
+        if: steps.validate.outputs.tests_generated == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
-          TARGET_REPO: ${{ inputs.target_repo }}
-          PR_NUMBER: ${{ inputs.pr_number }}
         run: |
           cd target-repo
           
-          # Get the PR's head branch
-          PR_DATA=$(gh pr view $PR_NUMBER --json headRefName,headRefOid --repo $TARGET_REPO)
+          # Get PR info
+          PR_DATA=$(gh pr view ${{ inputs.pr_number }} --json headRefName --repo ${{ inputs.target_repo }})
           HEAD_BRANCH=$(echo $PR_DATA | jq -r '.headRefName')
-          HEAD_SHA=$(echo $PR_DATA | jq -r '.headRefOid')
+          TEST_BRANCH="contract-tests/pr-${{ inputs.pr_number }}"
           
-          # Create a new branch for the tests
-          TEST_BRANCH="contract-tests/pr-${PR_NUMBER}"
-          
-          # Check if branch already exists
-          if git ls-remote --heads origin $TEST_BRANCH | grep -q $TEST_BRANCH; then
-            echo "Branch $TEST_BRANCH already exists, checking it out"
-            git fetch origin $TEST_BRANCH
-            git checkout $TEST_BRANCH
-          else
-            echo "Creating new branch $TEST_BRANCH from $HEAD_BRANCH"
-            git checkout $HEAD_BRANCH
-            git checkout -b $TEST_BRANCH
+          # Check if tests directory has files
+          if [ ! -d "tests/generated" ] || [ -z "$(ls -A tests/generated 2>/dev/null)" ]; then
+            echo "No generated tests found"
+            echo "pr_created=false" >> $GITHUB_OUTPUT
+            exit 0
           fi
           
-          # Copy generated tests to appropriate location
-          # Create tests/contract-tests folder structure
-          mkdir -p tests/contract-tests
+          # Setup branch
+          git fetch origin $HEAD_BRANCH
+          git checkout $HEAD_BRANCH
           
-          echo "Looking for generated tests in: ${{ github.workspace }}/generated-tests"
-          ls -la ${{ github.workspace }}/generated-tests/ || echo "Directory not found"
-          
-          # Copy generated tests to tests/contract-tests/
-          cp -rv ${{ github.workspace }}/generated-tests/* tests/contract-tests/ || echo "Copy failed"
-          
-          echo "Contents of tests/contract-tests/:"
-          ls -la tests/contract-tests/ || echo "No files copied"
-          
-          # Stage all new files
-          git add tests/contract-tests/
-          
-          # Check if there are changes to commit
-          if git diff --quiet && git diff --staged --quiet; then
-            echo "No changes to commit"
-            echo "pr_url=" >> $GITHUB_OUTPUT
-            exit 0
+          if git ls-remote --heads origin $TEST_BRANCH | grep -q $TEST_BRANCH; then
+            git fetch origin $TEST_BRANCH
+            git checkout $TEST_BRANCH
+            git merge $HEAD_BRANCH --no-edit || true
+          else
+            git checkout -b $TEST_BRANCH
           fi
           
           # Configure git
           git config user.name "AI Contract Testing Bot"
           git config user.email "ai-contract-testing@users.noreply.github.com"
           
-          # Commit the tests
-          git add tests/contract-tests/
-          git commit -m "AI-generated contract tests for PR #${PR_NUMBER}
+          # Commit
+          git add tests/generated/
           
-          These Pact contract tests were automatically generated by the AI Contract Testing workflow.
+          VALIDATED="${{ steps.validate.outputs.tests_validated }}"
+          ATTEMPTS="${{ steps.validate.outputs.attempts }}"
           
-          Please review the generated tests and merge if they look correct.
-          
-          Related PR: #${PR_NUMBER}"
-          
-          # Push the branch
-          git push origin $TEST_BRANCH --force
-          
-          # Create or update PR
-          EXISTING_PR=$(gh pr list --head $TEST_BRANCH --json number --jq '.[0].number' --repo $TARGET_REPO)
-          
-          if [ -n "$EXISTING_PR" ] && [ "$EXISTING_PR" != "null" ]; then
-            echo "PR already exists: #$EXISTING_PR"
-            PR_URL=$(gh pr view $EXISTING_PR --json url --jq '.url' --repo $TARGET_REPO)
+          if [ "$VALIDATED" = "true" ]; then
+            git commit -m "✅ AI-generated contract tests (validated on attempt $ATTEMPTS)" || echo "No changes"
           else
-            PR_URL=$(gh pr create \
-              --title "Contract Tests for PR #${PR_NUMBER}" \
-              --body "## AI-Generated Contract Tests
-          
-          This PR contains Pact contract tests automatically generated for PR #${PR_NUMBER}.
-          
-          ### What to do:
-          1. Review the generated test code
-          2. If tests look correct, approve and merge this PR into your feature branch
-          3. If changes are needed, comment \`ai-revise: <your feedback>\` on the original PR
-          
-          ### Generated by
-          AI Contract Testing Workflow powered by Gemini
-          
-          ---
-          *This is an automated PR. Please review carefully before merging.*" \
-              --base $HEAD_BRANCH \
-              --head $TEST_BRANCH \
-              --repo $TARGET_REPO)
+            git commit -m "⚠️ AI-generated contract tests (validation failed after $ATTEMPTS attempts)" || echo "No changes"
           fi
           
-          echo "pr_url=${PR_URL}" >> $GITHUB_OUTPUT
-          echo "Created/Updated PR: $PR_URL"
+          git push origin $TEST_BRANCH --force
+          
+          # Create/update PR
+          EXISTING_PR=$(gh pr list --head $TEST_BRANCH --json number --jq '.[0].number' --repo ${{ inputs.target_repo }})
+          
+          if [ "$VALIDATED" = "true" ]; then
+            TITLE="✅ Contract Tests for PR #${{ inputs.pr_number }}"
+            BODY="## ✅ AI-Generated Contract Tests (VALIDATED)
+          
+          Tests passed on attempt $ATTEMPTS!
+          
+          **Status:** Ready to merge
+          **Language:** ${{ steps.validate.outputs.language }}
+          
+          ---
+          *Generated by AI Contract Testing*"
+          else
+            TITLE="⚠️ Contract Tests for PR #${{ inputs.pr_number }} (Needs Review)"
+            BODY="## ⚠️ AI-Generated Contract Tests (NEEDS REVIEW)
+          
+          Tests failed validation after $ATTEMPTS attempts.
+          
+          **What to do:**
+          1. Review the generated code
+          2. Fix any issues manually
+          3. Or comment \`ai-revise: <feedback>\` on the original PR
+          
+          ---
+          *Generated by AI Contract Testing*"
+          fi
+          
+          if [ -n "$EXISTING_PR" ] && [ "$EXISTING_PR" != "null" ]; then
+            gh pr edit $EXISTING_PR --title "$TITLE" --body "$BODY" --repo ${{ inputs.target_repo }}
+            PR_URL=$(gh pr view $EXISTING_PR --json url --jq '.url' --repo ${{ inputs.target_repo }})
+          else
+            PR_URL=$(gh pr create --title "$TITLE" --body "$BODY" --base $HEAD_BRANCH --head $TEST_BRANCH --repo ${{ inputs.target_repo }})
+          fi
+          
+          echo "pr_url=$PR_URL" >> $GITHUB_OUTPUT
+          echo "pr_created=true" >> $GITHUB_OUTPUT
       
-      # -----------------------------------------------------------------------
-      # Comment on Original PR
-      # -----------------------------------------------------------------------
-      - name: Comment on Original PR (Success)
-        if: steps.run-pipeline.outputs.tests_generated == 'true' && steps.create-pr.outputs.pr_url != ''
+      # =====================================================================
+      # COMMENT ON ORIGINAL PR
+      # =====================================================================
+      - name: Comment on Original PR
+        if: steps.validate.outputs.tests_generated == 'true' && steps.create-pr.outputs.pr_created == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          gh pr comment ${{ inputs.pr_number }} \
-            --repo ${{ inputs.repository }} \
-            --body "## ✅ Contract Tests Generated
+          VALIDATED="${{ steps.validate.outputs.tests_validated }}"
+          ATTEMPTS="${{ steps.validate.outputs.attempts }}"
+          PR_URL="${{ steps.create-pr.outputs.pr_url }}"
+          
+          if [ "$VALIDATED" = "true" ]; then
+            COMMENT="## ✅ Contract Tests Generated & Validated!
 
-          I've analyzed your PR and generated Pact contract tests.
+          **Test PR:** $PR_URL
+          **Validation:** Passed on attempt $ATTEMPTS
 
-          **Test PR:** ${{ steps.create-pr.outputs.pr_url }}
-
-          ### Next Steps:
-          1. Review the generated tests in the linked PR
-          2. If the tests look good, merge the test PR into your feature branch
-          3. If you need changes, comment here with: \`ai-revise: <your feedback>\`
+          The tests have been automatically validated and are ready for review.
 
           ---
-          *Generated by AI Contract Testing Workflow*"
+          *AI Contract Testing*"
+          else
+            COMMENT="## ⚠️ Contract Tests Generated (Validation Failed)
+
+          **Test PR:** $PR_URL
+          **Attempts:** $ATTEMPTS
+
+          The tests were generated but failed validation after $ATTEMPTS attempts. Please review and fix manually.
+
+          ---
+          *AI Contract Testing*"
+          fi
+          
+          gh pr comment ${{ inputs.pr_number }} --repo ${{ inputs.repository }} --body "$COMMENT"
       
       - name: Comment on Original PR (Skipped)
-        if: steps.run-pipeline.outputs.tests_generated == 'false'
+        if: steps.validate.outputs.tests_generated == 'false' && steps.validate.outputs.skip_reason != ''
         env:
           GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          gh pr comment ${{ inputs.pr_number }} \
-            --repo ${{ inputs.repository }} \
-            --body "## ℹ️ Contract Test Generation Skipped
+          COMMENT="## ℹ️ Contract Test Generation Skipped
 
-          I analyzed your PR but did not generate contract tests.
-
-          **Reason:** ${{ steps.run-pipeline.outputs.skip_reason }}
-
-          This usually means:
-          - No API-related changes were detected in the PR
-          - No OpenAPI specification was found
-          - The changes don't require contract testing
-
-          If you believe this is incorrect, please check:
-          1. Your PR contains API endpoint changes
-          2. An OpenAPI spec exists in \`oas/\`, \`api/\`, or \`docs/\` folder
+          **Reason:** ${{ steps.validate.outputs.skip_reason }}
 
           ---
-          *Generated by AI Contract Testing Workflow*"
+          *AI Contract Testing*"
+          
+          gh pr comment ${{ inputs.pr_number }} --repo ${{ inputs.repository }} --body "$COMMENT"
       
-      # -----------------------------------------------------------------------
-      # Upload Artifacts (for debugging)
-      # -----------------------------------------------------------------------
-      - name: Upload Pipeline Logs
+      # =====================================================================
+      # UPLOAD ARTIFACTS
+      # =====================================================================
+      - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pipeline-logs
+          name: validation-logs
           path: |
-            ai-contract-testing/pipeline-output.log
+            validation-result.json
           retention-days: 7
-      
-      - name: Upload Generated Tests
-        if: steps.run-pipeline.outputs.tests_generated == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: generated-tests
-          path: generated-tests/
-          retention-days: 30

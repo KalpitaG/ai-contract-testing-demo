@@ -6,12 +6,16 @@ End-to-end pipeline that:
 2. Detects language and relevant specs (via RepoAnalyzer)
 3. Compresses context for AI
 4. Generates Pact contract tests using Gemini
+5. Supports revision mode with error feedback
 
 This is the main entry point for the AI-powered contract testing workflow.
 
 Usage:
     # From command line:
     python -m src.pipeline owner/repo 123
+    
+    # With revision feedback (retry after test failure):
+    python -m src.pipeline owner/repo 123 --revision-feedback "Tests failed: Error message..."
     
     # From code:
     from src.pipeline import ContractTestPipeline
@@ -68,6 +72,10 @@ class PipelineResult:
     error: Optional[str] = None
     skip_reason: Optional[str] = None
     
+    # Revision tracking
+    is_revision: bool = False
+    revision_feedback: Optional[str] = None
+    
     @property
     def has_tests(self) -> bool:
         """Check if tests were generated."""
@@ -93,6 +101,9 @@ class PipelineResult:
     def summary(self) -> str:
         """Generate human-readable summary."""
         lines = ["=" * 60, "Pipeline Result Summary", "=" * 60]
+        
+        if self.is_revision:
+            lines.append("Mode: REVISION (retry with feedback)")
         
         if self.error:
             lines.append(f"Status: FAILED")
@@ -140,6 +151,7 @@ class ContractTestPipeline:
     2. Detects repository language and finds relevant OpenAPI specs
     3. Compresses context to fit AI token limits
     4. Calls Gemini to analyze changes and generate tests
+    5. Supports revision mode for retrying with error feedback
     
     Each step is traced in Langfuse for observability.
     """
@@ -163,7 +175,8 @@ class ContractTestPipeline:
         self,
         repo: str,
         pr_number: int,
-        force_language: Optional[str] = None
+        force_language: Optional[str] = None,
+        revision_feedback: Optional[str] = None
     ) -> PipelineResult:
         """
         Run the full pipeline for a Pull Request.
@@ -172,15 +185,23 @@ class ContractTestPipeline:
             repo: Repository in "owner/repo" format
             pr_number: Pull Request number
             force_language: Override auto-detected language (optional)
+            revision_feedback: Error feedback for revision mode (optional)
             
         Returns:
             PipelineResult with all outputs
         """
         result = PipelineResult()
+        result.is_revision = revision_feedback is not None
+        result.revision_feedback = revision_feedback
         
+        mode_str = "REVISION MODE" if result.is_revision else "GENERATION MODE"
         print(f"\n{'=' * 60}")
-        print(f"Running Pipeline: {repo} PR #{pr_number}")
+        print(f"Running Pipeline: {repo} PR #{pr_number} [{mode_str}]")
         print(f"{'=' * 60}")
+        
+        if revision_feedback:
+            print(f"\n[Revision] Feedback received:")
+            print(f"  {revision_feedback[:200]}..." if len(revision_feedback) > 200 else f"  {revision_feedback}")
         
         # Step 1: Aggregate context
         print("\n[Step 1/5] Collecting and aggregating context...")
@@ -206,9 +227,9 @@ class ContractTestPipeline:
             traceback.print_exc()
             return result
         
-        # Step 2: Check if PR has API changes
+        # Step 2: Check if PR has API changes (skip in revision mode)
         print("\n[Step 2/5] Checking for API changes...")
-        if not self._has_api_changes(aggregated):
+        if not result.is_revision and not self._has_api_changes(aggregated):
             result.skip_reason = "No API contract changes detected in PR"
             result.success = True
             print(f"  Skipping: {result.skip_reason}")
@@ -222,7 +243,8 @@ class ContractTestPipeline:
             result.compressed_context = compressed
             
             stats = compressed.stats
-            print(f"  Compression: {stats.original_tokens} -> {stats.compressed_tokens} tokens")
+            print(f"  Original: {stats.original_tokens} tokens")
+            print(f"  Compressed: {stats.compressed_tokens} tokens")
             print(f"  Reduction: {stats.reduction_percent:.1f}%")
             
         except Exception as e:
@@ -231,8 +253,9 @@ class ContractTestPipeline:
             traceback.print_exc()
             return result
         
-        # Step 4: Generate tests
-        print("\n[Step 4/5] Generating contract tests with AI...")
+        # Step 4: Generate tests (or regenerate with feedback)
+        step_name = "Regenerating" if result.is_revision else "Generating"
+        print(f"\n[Step 4/5] {step_name} contract tests with AI...")
         try:
             # Get file naming convention from pact library (default to snake_case)
             pact_library = aggregated.pact_library
@@ -242,7 +265,8 @@ class ContractTestPipeline:
                 compressed_context=compressed,
                 language=result.detected_language,
                 pact_library=pact_library,
-                file_naming_convention=file_naming
+                file_naming_convention=file_naming,
+                revision_feedback=revision_feedback  # Pass feedback for revision
             )
             result.generation_result = generation
             
@@ -284,7 +308,8 @@ class ContractTestPipeline:
                 output={
                     "success": True,
                     "tests_generated": len(result.generated_tests),
-                    "change_type": result.analysis.change_type if result.analysis else None
+                    "change_type": result.analysis.change_type if result.analysis else None,
+                    "is_revision": result.is_revision
                 },
                 metadata={
                     "repo": repo,
@@ -403,6 +428,10 @@ def main() -> int:
     parser.add_argument("--language", help="Override detected language")
     parser.add_argument("--model", default=None, help="Gemini model to use (default: from GEMINI_MODEL env var)")
     parser.add_argument("--output-dir", help="Directory to write generated tests")
+    parser.add_argument(
+        "--revision-feedback", 
+        help="Error feedback for revision mode (retrying after test failure)"
+    )
     
     args = parser.parse_args()
     
@@ -414,7 +443,8 @@ def main() -> int:
     result = pipeline.run(
         repo=args.repo,
         pr_number=args.pr,
-        force_language=args.language
+        force_language=args.language,
+        revision_feedback=args.revision_feedback
     )
     
     # Print summary
@@ -423,6 +453,10 @@ def main() -> int:
     # Write tests to files if output dir specified
     if args.output_dir and result.has_tests:
         output_path = Path(args.output_dir)
+        # Clear previous generated tests
+        if output_path.exists():
+            for f in output_path.glob("*"):
+                f.unlink()
         output_path.mkdir(parents=True, exist_ok=True)
         
         for test in result.generated_tests:
