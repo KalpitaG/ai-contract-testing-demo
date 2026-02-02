@@ -97,6 +97,7 @@ jobs:
           # Required
           GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: gemini-2.0-flash
           PACTFLOW_TOKEN: ${{ secrets.PACTFLOW_TOKEN }}
           PACTFLOW_BASE_URL: ${{ secrets.PACTFLOW_BASE_URL }}
           # Optional - Langfuse
