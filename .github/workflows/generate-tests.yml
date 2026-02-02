@@ -165,7 +165,13 @@ jobs:
           
           # Copy generated tests to appropriate location
           mkdir -p tests/generated
-          cp -r ../generated-tests/* tests/generated/ 2>/dev/null || true
+          echo "Looking for generated tests in: ${{ github.workspace }}/generated-tests"
+          ls -la ${{ github.workspace }}/generated-tests/ || echo "Directory not found"
+          cp -rv ${{ github.workspace }}/generated-tests/* tests/generated/ || echo "Copy failed"
+          ls -la tests/generated/ || echo "No files copied"
+          
+          # Stage all new files
+          git add tests/generated/
           
           # Check if there are changes to commit
           if git diff --quiet && git diff --staged --quiet; then
