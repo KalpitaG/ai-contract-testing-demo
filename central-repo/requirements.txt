@@ -1,0 +1,28 @@
+# =============================================================================
+# AI Contract Testing - Dependencies
+# =============================================================================
+
+# Core
+python-dotenv>=1.0.0
+
+# GitHub API
+PyGithub>=2.1.0
+
+# JIRA API (optional - only needed if JIRA integration is used)
+atlassian-python-api>=3.41.0
+
+# AI - Gemini
+google-genai>=0.3.0
+
+# Observability (optional but recommended)
+langfuse>=2.0.0
+
+# YAML/JSON parsing
+PyYAML>=6.0
+jsonschema>=4.20.0
+
+# HTTP requests
+requests>=2.31.0
+
+# OpenAPI parsing
+openapi-spec-validator>=0.7.0

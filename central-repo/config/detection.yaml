@@ -1,0 +1,375 @@
+# detection.yaml
+# =============================================================================
+# Configuration for repository analysis and detection rules
+# This file allows adding new languages/patterns without code changes
+# =============================================================================
+#
+# Benefits of config-driven approach:
+# - Add new languages by editing YAML, not Python code
+# - Self-documenting - this file serves as documentation
+# - Testable - can test detection logic with different configs
+# - Scalable - new team uses Rust? Add 5 lines here
+#
+# =============================================================================
+
+version: "1.1"
+
+# =============================================================================
+# LANGUAGE DETECTION
+# =============================================================================
+# Detects programming language from files in repository root.
+# Priority: first match wins (order matters in the indicators list)
+# =============================================================================
+
+language_detection:
+  # Files that indicate a specific language
+  # Checked in order - first match wins
+  indicators:
+    - file: "go.mod"
+      language: "go"
+      confidence: "high"
+
+    - file: "tsconfig.json"
+      language: "typescript"
+      confidence: "high"
+
+    - file: "package.json"
+      language: "typescript"
+      confidence: "medium"
+      # Note: Could be JavaScript - check tsconfig.json first for TypeScript
+
+    - file: "pom.xml"
+      language: "java"
+      confidence: "high"
+
+    - file: "build.gradle"
+      language: "java"
+      confidence: "high"
+
+    - file: "build.gradle.kts"
+      language: "kotlin"
+      confidence: "high"
+
+    - file: "settings.gradle.kts"
+      language: "kotlin"
+      confidence: "medium"
+
+    - file: "pyproject.toml"
+      language: "python"
+      confidence: "high"
+
+    - file: "requirements.txt"
+      language: "python"
+      confidence: "medium"
+
+    - file: "setup.py"
+      language: "python"
+      confidence: "medium"
+
+    - file: "Cargo.toml"
+      language: "rust"
+      confidence: "high"
+
+  # Pact library configuration for each language
+  # Used by AI to generate correct import statements and test structure
+  pact_libraries:
+    go:
+      package: "github.com/pact-foundation/pact-go/v2"
+      import_statement: 'import "github.com/pact-foundation/pact-go/v2"'
+      test_framework: "testing"
+      file_extension: "_pact_test.go"
+      file_naming: "snake_case"
+      example_test_structure: |
+        func TestConsumerPact(t *testing.T) {
+            mockProvider, err := consumer.NewV3Pact(consumer.MockHTTPProviderConfig{
+                Consumer: "ConsumerName",
+                Provider: "ProviderName",
+            })
+            // ... test implementation
+        }
+
+    typescript:
+      package: "@pact-foundation/pact"
+      import_statement: 'import { PactV3, MatchersV3 } from "@pact-foundation/pact"'
+      test_framework: "jest"
+      file_extension: ".pact.spec.ts"
+      file_naming: "kebab-case"
+      example_test_structure: |
+        describe('Consumer Pact', () => {
+            const provider = new PactV3({
+                consumer: 'ConsumerName',
+                provider: 'ProviderName',
+            });
+            // ... test implementation
+        });
+
+    java:
+      package: "au.com.dius.pact.consumer:junit5"
+      import_statement: |
+        import au.com.dius.pact.consumer.dsl.PactDslWithProvider;
+        import au.com.dius.pact.consumer.junit5.PactConsumerTestExt;
+        import au.com.dius.pact.consumer.junit5.PactTestFor;
+      test_framework: "junit5"
+      file_extension: "PactTest.java"
+      file_naming: "PascalCase"
+      example_test_structure: |
+        @ExtendWith(PactConsumerTestExt.class)
+        @PactTestFor(providerName = "ProviderName")
+        class ConsumerPactTest {
+            @Pact(consumer = "ConsumerName")
+            public V4Pact createPact(PactDslWithProvider builder) {
+                // ... pact definition
+            }
+        }
+
+    kotlin:
+      package: "au.com.dius.pact.consumer:junit5"
+      import_statement: |
+        import au.com.dius.pact.consumer.dsl.PactDslWithProvider
+        import au.com.dius.pact.consumer.junit5.PactConsumerTestExt
+        import au.com.dius.pact.consumer.junit5.PactTestFor
+      test_framework: "junit5"
+      file_extension: "PactTest.kt"
+      file_naming: "PascalCase"
+      example_test_structure: |
+        @ExtendWith(PactConsumerTestExt::class)
+        @PactTestFor(providerName = "ProviderName")
+        class ConsumerPactTest {
+            @Pact(consumer = "ConsumerName")
+            fun createPact(builder: PactDslWithProvider): V4Pact {
+                // ... pact definition
+            }
+        }
+
+    python:
+      package: "pact-python"
+      import_statement: "from pact import Consumer, Provider, Like, EachLike"
+      test_framework: "pytest"
+      file_extension: "_pact_test.py"
+      file_naming: "snake_case"
+      example_test_structure: |
+        @pytest.fixture
+        def pact():
+            pact = Consumer('ConsumerName').has_pact_with(
+                Provider('ProviderName'),
+                pact_dir='./pacts'
+            )
+            pact.start_service()
+            yield pact
+            pact.stop_service()
+
+# =============================================================================
+# JIRA CONFIGURATION
+# =============================================================================
+# Configuration for JIRA ticket parsing and field extraction.
+# =============================================================================
+
+jira:
+  # Custom field IDs for acceptance criteria
+  # These are organization-specific - update for your JIRA instance
+  # Find your custom field IDs in JIRA Admin > Custom Fields
+  acceptance_criteria_fields:
+    - "customfield_10016"  # Common AC field
+    - "customfield_10017"  # Alternative AC field
+    - "customfield_10020"  # Another common AC field
+  
+  # Custom field for epic link (if using older JIRA versions)
+  epic_link_field: "customfield_10014"
+
+# =============================================================================
+# GITHUB PR CONFIGURATION
+# =============================================================================
+# Configuration for GitHub PR analysis and API change detection.
+# =============================================================================
+
+github_pr:
+  # Patterns in filenames that indicate API-relevant files
+  # Used to determine if a PR contains API changes worth testing
+  api_relevant_patterns:
+    - "openapi"
+    - "swagger"
+    - "api-spec"
+    - "route"
+    - "controller"
+    - "handler"
+    - "schema"
+    - "dto"
+    - "model"
+    - "endpoint"
+    - "service"
+  
+  # Maximum patch size to include (bytes)
+  # Larger diffs are truncated to avoid token explosion
+  max_patch_size: 2000
+
+# =============================================================================
+# OPENAPI SPEC DETECTION
+# =============================================================================
+# Finds OpenAPI/Swagger specifications in the repository.
+# =============================================================================
+
+openapi_detection:
+  # Directories to search for specs (checked in order)
+  search_paths:
+    - "api/specs"
+    - "api"
+    - "specs"
+    - "docs/api"
+    - "docs/openapi"
+    - "openapi"
+    - "swagger"
+    - "."
+
+  # File patterns that indicate OpenAPI specs
+  file_patterns:
+    - "*.yaml"
+    - "*.yml"
+    - "*.json"
+
+  # Keywords in file content that confirm it's an OpenAPI spec
+  content_indicators:
+    - "openapi:"
+    - "swagger:"
+    - '"openapi":'
+    - '"swagger":'
+
+  # Files to always include if found (shared definitions/schemas)
+  # These contain reusable components referenced by other specs
+  common_files:
+    - "common.yaml"
+    - "common.yml"
+    - "shared.yaml"
+    - "shared.yml"
+    - "definitions.yaml"
+    - "definitions.yml"
+    - "components.yaml"
+    - "components.yml"
+    - "schemas.yaml"
+    - "schemas.yml"
+
+  # Files/patterns to exclude (not OpenAPI specs)
+  exclude_patterns:
+    - "docker-compose*.yaml"
+    - "docker-compose*.yml"
+    - ".github/**"
+    - ".gitlab/**"
+    - "*.config.yaml"
+    - "*.config.yml"
+    - "mkdocs.yaml"
+    - "mkdocs.yml"
+    - ".pre-commit-config.yaml"
+    - "codecov.yaml"
+    - "codecov.yml"
+    - ".golangci.yaml"
+    - ".golangci.yml"
+
+# =============================================================================
+# SPEC MATCHING
+# =============================================================================
+# Determines which OpenAPI spec(s) are relevant to a specific PR.
+# Uses multiple strategies in priority order.
+# =============================================================================
+
+spec_matching:
+  strategies:
+    # Priority 1: Spec file itself was changed in the PR
+    - name: "changed_spec"
+      description: "OpenAPI spec file was directly modified in the PR"
+      priority: 1
+      # If PR modifies api/specs/email-api.yaml, use that spec
+
+    # Priority 2: Match changed code paths to spec names
+    - name: "path_match"
+      description: "Match changed file paths to spec names"
+      priority: 2
+      # Example: PR changes internal/galleries/ -> use galleries-api.yaml
+      patterns:
+        # Go-style layouts
+        - code_path_contains: "internal/{name}/"
+          spec_name_pattern: "{name}-api"
+        - code_path_contains: "pkg/{name}/"
+          spec_name_pattern: "{name}-api"
+        - code_path_contains: "cmd/{name}/"
+          spec_name_pattern: "{name}-api"
+
+        # TypeScript/Node-style layouts
+        - code_path_contains: "src/{name}/"
+          spec_name_pattern: "{name}-api"
+        - code_path_contains: "lib/{name}/"
+          spec_name_pattern: "{name}-api"
+        - code_path_contains: "modules/{name}/"
+          spec_name_pattern: "{name}-api"
+
+        # Java/Kotlin-style layouts
+        - code_path_contains: "src/main/java/**/{name}/"
+          spec_name_pattern: "{name}-api"
+        - code_path_contains: "src/main/kotlin/**/{name}/"
+          spec_name_pattern: "{name}-api"
+
+    # Priority 3: Match PR title or branch name to spec name
+    - name: "title_branch_match"
+      description: "Match PR title or branch name to spec name"
+      priority: 3
+      # Example: Branch "feature/galleries-improvement" -> galleries-api.yaml
+
+    # Priority 4: Let AI determine relevance from PR description
+    - name: "ai_inference"
+      description: "Include all specs and let AI determine relevance"
+      priority: 4
+      max_specs: 5
+      # Only use if other strategies fail
+
+  # Fallback behavior when no match found
+  fallback:
+    strategy: "include_all"
+    max_specs: 3
+    warning_message: "Could not determine relevant spec. Including up to 3 specs."
+
+# =============================================================================
+# TICKET EXTRACTION
+# =============================================================================
+# Extracts JIRA ticket key from PR title or branch name.
+# =============================================================================
+
+ticket_extraction:
+  # Regex pattern for JIRA ticket IDs
+  # Matches: ABC-123, TEAM-4567, etc.
+  pattern: "([A-Z][A-Z0-9]+-\\d+)"
+
+  # Where to look for ticket (in priority order)
+  sources:
+    - "pr_title"
+    - "branch_name"
+
+  # Patterns that indicate "no real ticket" (placeholder values)
+  # If ticket matches these, treat as no ticket
+  placeholder_patterns:
+    - "-0$"
+    - "-00$"
+    - "-000$"
+    - "^NOJIRA"
+    - "^NO-TICKET"
+    - "^NOTICKET"
+
+# =============================================================================
+# TEST OUTPUT CONFIGURATION
+# =============================================================================
+# Defines where generated tests should be placed.
+# =============================================================================
+
+test_output:
+  # Default directories for generated Pact tests by language
+  default_directories:
+    go: "tests/pact"
+    typescript: "src/__tests__/pact"
+    java: "src/test/java/pact"
+    kotlin: "src/test/kotlin/pact"
+    python: "tests/pact"
+
+  # Naming conventions for test files
+  naming_conventions:
+    go: "{consumer}_{provider}_pact_test.go"
+    typescript: "{consumer}-{provider}.pact.spec.ts"
+    java: "{Consumer}{Provider}PactTest.java"
+    kotlin: "{Consumer}{Provider}PactTest.kt"
+    python: "{consumer}_{provider}_pact_test.py"
