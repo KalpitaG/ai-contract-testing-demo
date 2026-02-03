@@ -158,10 +158,19 @@ jobs:
           
           # Check if tests directory has files
           if [ ! -d "tests/contract-tests" ] || [ -z "$(ls -A tests/contract-tests 2>/dev/null)" ]; then
-            echo "No generated tests found"
+            echo "No generated tests found in tests/contract-tests"
             echo "pr_created=false" >> $GITHUB_OUTPUT
             exit 0
           fi
+          
+          echo "Found tests in: tests/contract-tests"
+          
+          # Save the generated tests to a temp location
+          mkdir -p /tmp/generated-tests
+          cp -r tests/contract-tests/* /tmp/generated-tests/
+          
+          # Clean up any untracked files to avoid checkout conflicts
+          git clean -fd
           
           # Setup branch
           git fetch origin $HEAD_BRANCH
@@ -174,6 +183,10 @@ jobs:
           else
             git checkout -b $TEST_BRANCH
           fi
+          
+          # Restore the generated tests
+          mkdir -p tests/contract-tests
+          cp -r /tmp/generated-tests/* tests/contract-tests/
           
           # Configure git
           git config user.name "AI Contract Testing Bot"
