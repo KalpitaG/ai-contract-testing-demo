@@ -176,7 +176,8 @@ class ContractTestPipeline:
         repo: str,
         pr_number: int,
         force_language: Optional[str] = None,
-        revision_feedback: Optional[str] = None
+        revision_feedback: Optional[str] = None,
+        existing_tests: Optional[dict[str, str]] = None
     ) -> PipelineResult:
         """
         Run the full pipeline for a Pull Request.
@@ -186,6 +187,7 @@ class ContractTestPipeline:
             pr_number: Pull Request number
             force_language: Override auto-detected language (optional)
             revision_feedback: Error feedback for revision mode (optional)
+            existing_tests: Dict of existing test files (filename -> content) for revision mode
             
         Returns:
             PipelineResult with all outputs
@@ -252,7 +254,7 @@ class ContractTestPipeline:
             return result
         
         # Step 4: Generate tests (or regenerate with feedback)
-        step_name = "Regenerating" if result.is_revision else "Generating"
+        step_name = "Revising" if result.is_revision else "Generating"
         print(f"\n[Step 4/5] {step_name} contract tests with AI...")
         try:
             # Get file naming convention from pact library (default to snake_case)
@@ -264,7 +266,8 @@ class ContractTestPipeline:
                 language=result.detected_language,
                 pact_library=pact_library,
                 file_naming_convention=file_naming,
-                revision_feedback=revision_feedback  # Pass feedback for revision
+                revision_feedback=revision_feedback,  # Pass feedback for revision
+                existing_tests=existing_tests  # Pass existing tests for revision mode
             )
             result.generation_result = generation
             

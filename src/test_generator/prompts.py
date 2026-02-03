@@ -481,17 +481,18 @@ Generate Pact consumer contract tests for the consumer functions in this codebas
 {context}
 
 ## Instructions
-1. ALWAYS generate Pact tests for consumer functions that make HTTP/API calls
-2. Look at the consumer code (src/consumer.js, etc.) and generate tests for ALL API-calling functions
-3. Each function that calls axios.get, axios.post, fetch, etc. needs a Pact test
-4. Use the detected language ({language}) and its Pact library
-5. Follow the file naming convention: {file_naming_convention}
-6. If OpenAPI spec is provided, use it to determine expected request/response shapes
-7. Generate tests even if the PR diff is small - test the EXISTING consumer functions
+1. FOCUS ON CHANGED CODE: Generate tests primarily for new/modified API functions in the PR diff
+2. Look at the "PULL REQUEST" section to identify what changed
+3. If consumer source code is provided, find functions that were ADDED or MODIFIED
+4. Each function that makes HTTP calls (axios.get, axios.post, fetch, etc.) needs a Pact test
+5. Use the detected language ({language}) and its Pact library
+6. Follow the file naming convention: {file_naming_convention}
+7. If OpenAPI spec is provided, use it to determine expected request/response shapes
 
-## IMPORTANT: Generate tests for these consumer functions
-Look for functions like: getItem, listItems, createItem, getUserById, searchItems, getItemStats, etc.
-Each function that makes an API call should have a corresponding Pact test.
+## PRIORITY: Generate tests for NEW/CHANGED functions
+- Look at the PR diff to find NEW functions added
+- Focus on functions added in this PR first
+- Only test existing unchanged functions if explicitly no new functions exist
 
 ## CRITICAL: Pact Request Matching Rules
 - For GET/DELETE requests: Do NOT include Content-Type header in withRequest - the consumer doesn't send it

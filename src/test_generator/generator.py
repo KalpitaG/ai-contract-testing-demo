@@ -192,7 +192,8 @@ class ContractTestGenerator:
         language: str,
         pact_library: Optional["PactLibraryInfo"],
         file_naming_convention: str,
-        revision_feedback: Optional[str] = None
+        revision_feedback: Optional[str] = None,
+        existing_tests: Optional[dict[str, str]] = None
     ) -> GenerationResult:
         """
         Generate Pact contract tests from compressed context.
@@ -203,6 +204,7 @@ class ContractTestGenerator:
             pact_library: PactLibraryInfo object from repo_analyzer (or None)
             file_naming_convention: Test file naming pattern
             revision_feedback: Optional feedback from failed test run for retry
+            existing_tests: Dict of existing test files (filename -> content) for revision mode
             
         Returns:
             GenerationResult containing analysis and generated tests
@@ -227,8 +229,35 @@ class ContractTestGenerator:
             file_naming_convention=file_naming_convention
         )
         
-        # Add revision feedback if this is a retry
-        if revision_feedback:
+        # Add revision section if this is a revision request with existing tests
+        if revision_feedback and existing_tests:
+            user_prompt += f"""
+
+## REVISION MODE - UPDATE EXISTING TESTS ONLY
+You are revising EXISTING tests, not generating new ones from scratch.
+
+### Developer Feedback:
+{revision_feedback}
+
+### Existing Tests to Revise:
+"""
+            for filename, content in existing_tests.items():
+                user_prompt += f"""
+#### {filename}
+```
+{content}
+```
+"""
+            user_prompt += """
+### Instructions:
+1. Apply the developer's requested changes to these existing tests
+2. Keep all other tests unchanged unless they have errors
+3. Return ALL tests (modified and unmodified) so no tests are lost
+4. Do NOT regenerate from scratch - revise what exists
+5. Fix any errors mentioned in the feedback
+"""
+        elif revision_feedback:
+            # Fallback for retry after test failure (no existing tests passed)
             user_prompt += f"""
 
 ## REVISION REQUEST

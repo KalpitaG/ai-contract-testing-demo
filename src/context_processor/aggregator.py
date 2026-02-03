@@ -337,7 +337,9 @@ class ContextAggregator:
         print("[Aggregator] Step 6/6: Collecting consumer source files...")
         source_files = {}
         try:
-            source_files = self._collect_source_files(repo, repo_analysis.detected_language)
+            # Get the source branch from GitHub context to fetch the latest code
+            source_branch = github_context.source_branch if github_context else None
+            source_files = self._collect_source_files(repo, repo_analysis.detected_language, source_branch)
         except Exception as e:
             warning = f"Failed to collect source files: {e}"
             print(f"[Aggregator] Warning: {warning}")
@@ -414,13 +416,14 @@ class ContextAggregator:
             print(f"[Aggregator] Error fetching {spec_path}: {e}")
             return None
 
-    def _collect_source_files(self, repo: str, language: str) -> dict[str, str]:
+    def _collect_source_files(self, repo: str, language: str, branch: Optional[str] = None) -> dict[str, str]:
         """
         Collect key source files that contain consumer/API code.
         
         Args:
             repo: Repository name
             language: Detected programming language
+            branch: Git branch to fetch from (defaults to repo's default branch)
             
         Returns:
             Dict mapping filename to content
@@ -444,12 +447,18 @@ class ContextAggregator:
                 # Skip glob patterns for now (would need recursive search)
                 if "*" in file_path:
                     continue
+                
+                # Fetch from specific branch if provided
+                if branch:
+                    content = gh_repo.get_contents(file_path, ref=branch)
+                else:
+                    content = gh_repo.get_contents(file_path)
                     
-                content = gh_repo.get_contents(file_path)
                 if content and hasattr(content, 'decoded_content'):
                     file_content = content.decoded_content.decode("utf-8")
                     source_files[file_path] = file_content
-                    print(f"  [OK] Collected {file_path} ({len(file_content)} chars)")
+                    branch_info = f" (from {branch})" if branch else ""
+                    print(f"  [OK] Collected {file_path} ({len(file_content)} chars){branch_info}")
             except Exception:
                 # File doesn't exist, skip
                 pass

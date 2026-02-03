@@ -236,6 +236,9 @@ github_pr:
     - "model"
     - "endpoint"
     - "service"
+    - "consumer"
+    - "client"
+    - "api"
   
   # Maximum patch size to include (bytes)
   # Larger diffs are truncated to avoid token explosion

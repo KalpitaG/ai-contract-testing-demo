@@ -215,12 +215,39 @@ def _run_main(args):
     result = WorkflowResult()
     result.is_revision = args.revision_feedback is not None
     
+    # Collect existing tests for revision mode
+    existing_tests = {}
     if result.is_revision:
         print("\n" + "=" * 60)
         print("REVISION MODE")
         print("=" * 60)
         feedback_preview = args.revision_feedback[:200] + "..." if len(args.revision_feedback) > 200 else args.revision_feedback
         print(f"Developer feedback: {feedback_preview}")
+        
+        # Collect existing test files from the test directory
+        if test_dir.exists():
+            print("\n[Runner] Collecting existing tests for revision...")
+            for test_file in test_dir.glob("*.test.js"):
+                try:
+                    content = test_file.read_text()
+                    existing_tests[test_file.name] = content
+                    print(f"  [OK] {test_file.name} ({len(content)} chars)")
+                except Exception as e:
+                    print(f"  [WARN] Failed to read {test_file.name}: {e}")
+            
+            # Also check for .test.ts files
+            for test_file in test_dir.glob("*.test.ts"):
+                try:
+                    content = test_file.read_text()
+                    existing_tests[test_file.name] = content
+                    print(f"  [OK] {test_file.name} ({len(content)} chars)")
+                except Exception as e:
+                    print(f"  [WARN] Failed to read {test_file.name}: {e}")
+            
+            if existing_tests:
+                print(f"  Found {len(existing_tests)} existing test files")
+            else:
+                print("  [WARN] No existing tests found to revise")
     
     # Initialize pipeline
     config = GeneratorConfig.from_env()
@@ -244,7 +271,8 @@ def _run_main(args):
             repo=args.repo,
             pr_number=args.pr,
             force_language=args.language,
-            revision_feedback=revision_feedback
+            revision_feedback=revision_feedback,
+            existing_tests=existing_tests if result.is_revision else None
         )
         
         result.language = pipeline_result.detected_language
