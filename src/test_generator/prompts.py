@@ -513,10 +513,10 @@ Generate Pact consumer contract tests for the consumer functions in this codebas
 Example - function WITHOUT try/catch (like listCategories, getCategoryById):
 ```javascript
 // This function THROWS on 404 - no try/catch
-export async function getCategoryById(baseUrl, categoryId) {
-    const res = await axios.get(`${baseUrl}/categories/${categoryId}`);
+export async function getCategoryById(baseUrl, categoryId) {{
+    const res = await axios.get(`${{baseUrl}}/categories/${{categoryId}}`);
     return res.data;  // No try/catch - 404 will throw!
-}
+}}
 // DO NOT test for null return - only test success case
 ```
 
