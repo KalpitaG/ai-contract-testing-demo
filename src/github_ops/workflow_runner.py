@@ -196,6 +196,18 @@ def main():
     
     args = parser.parse_args()
     
+    try:
+        _run_main(args)
+    except Exception as e:
+        print(f"\n[Runner] FATAL ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        # Still exit 0 so workflow can continue and report the error
+        sys.exit(0)
+
+
+def _run_main(args):
+    """Main logic wrapped for error handling."""
     target_path = Path(args.target_repo).resolve()
     test_dir = target_path / "tests" / "contract-tests"
     
