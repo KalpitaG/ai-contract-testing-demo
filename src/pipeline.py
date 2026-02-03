@@ -228,13 +228,11 @@ class ContractTestPipeline:
             return result
         
         # Step 2: Check if PR has API changes (skip in revision mode)
+        # NOTE: Disabled strict check - let AI decide based on full context
+        # The AI has better understanding of what constitutes API changes
         print("\n[Step 2/5] Checking for API changes...")
-        if not result.is_revision and not self._has_api_changes(aggregated):
-            result.skip_reason = "No API contract changes detected in PR"
-            result.success = True
-            print(f"  Skipping: {result.skip_reason}")
-            return result
-        print("  API changes detected, proceeding with generation")
+        # Always proceed - AI will set change_type="no_contract_impact" if truly no changes
+        print("  Proceeding with generation (AI will analyze for contract changes)")
         
         # Step 3: Compress context
         print("\n[Step 3/5] Compressing context...")
