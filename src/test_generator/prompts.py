@@ -520,10 +520,15 @@ export async function getCategoryById(baseUrl, categoryId) {{
 // DO NOT test for null return - only test success case
 ```
 
-## Consumer and Provider Names
-- Derive consumer name from: the repository name or service making the API call
-- Derive provider name from: the API being called (often from OpenAPI spec title or base URL)
-- If unclear, use descriptive names based on the PR context
+## CRITICAL: Consumer and Provider Names - BE CONSISTENT
+1. **FIRST**: Check if there are existing Pact test files in the context - use the SAME consumer/provider names
+2. **SECOND**: Check if there are existing pact JSON files mentioned - extract names from there
+3. **THIRD**: If no existing pacts/tests, derive names from the repository:
+   - Consumer name: `{RepoName}Consumer` (e.g., "pact-implementation" → "PactImplementationConsumer")
+   - Provider name: `{ServiceName}API` based on what API is being called
+4. **CRITICAL**: All tests in a repository MUST use the SAME consumer/provider names
+5. Do NOT create different names for different endpoints - they should all be the same integration
+6. Example - if existing tests use `ItemsConsumer` and `ItemsCrudAPI`, ALL new tests must use those exact names
 
 ## CRITICAL: Use Existing Consumer Functions
 - Look at the consumer code in the context (src/consumer.js, src/consumer.ts, etc.)

@@ -403,9 +403,10 @@ Example Structure:
     def _compress_pactflow(self, pactflow_ctx) -> str:
         """Compress Pactflow context."""
         lines = ["=== EXISTING CONTRACTS (Pactflow) ==="]
+        lines.append("USE THESE EXACT NAMES in all generated tests for consistency!")
         
         if not pactflow_ctx.contracts:
-            lines.append("No existing contracts found.")
+            lines.append("No existing contracts found - derive names from repository.")
             return "\n".join(lines)
         
         lines.append(f"Total Contracts: {len(pactflow_ctx.contracts)}")
@@ -418,9 +419,17 @@ Example Structure:
                 by_consumer[consumer] = []
             by_consumer[consumer].append(contract)
         
+        # Extract the first consumer/provider pair as the standard
+        if pactflow_ctx.contracts:
+            first_contract = pactflow_ctx.contracts[0]
+            lines.append(f"\n**REQUIRED NAMES FOR ALL TESTS:**")
+            lines.append(f"  Consumer: '{first_contract.consumer}'")
+            lines.append(f"  Provider: '{first_contract.provider}'")
+        
+        lines.append(f"\nExisting integrations:")
         for consumer, contracts in by_consumer.items():
             providers = [c.provider for c in contracts]
-            lines.append(f"\n  {consumer} -> {', '.join(providers)}")
+            lines.append(f"  {consumer} -> {', '.join(providers)}")
         
         return "\n".join(lines)
     
