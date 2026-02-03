@@ -189,16 +189,19 @@ def main():
         print("\n[Runner] Writing tests to target repo...")
         test_dir.mkdir(parents=True, exist_ok=True)
         
-        # Clear previous tests
-        for f in test_dir.glob("*"):
-            f.unlink()
+        # NOTE: We only overwrite files with the same name as generated ones
+        # We do NOT delete existing tests that may be for other APIs or test types
+        # This preserves e2e, a11y, or other contract tests for different endpoints
         
         generated_files = []
         for test in pipeline_result.generated_tests:
             test_file = test_dir / test.filename
+            if test_file.exists():
+                print(f"  Overwriting: {test.filename}")
+            else:
+                print(f"  Creating: {test.filename}")
             test_file.write_text(test.code)
             generated_files.append(test.filename)
-            print(f"  Wrote: {test.filename}")
         
         result.generated_files = generated_files
         
