@@ -500,18 +500,25 @@ Generate Pact consumer contract tests for the consumer functions in this codebas
 - Only specify headers in withRequest that the consumer code ACTUALLY sends
 - Always include Content-Type in willRespondWith for JSON responses
 
-## CRITICAL: Error Handling Tests
-- BEFORE generating error tests (e.g., 404), check if the consumer function handles that error
-- If the function has try/catch that returns null/undefined on 404, test that it returns null
-- If the function does NOT have try/catch (just makes the request), the 404 will throw an AxiosError/FetchError
-- For functions that throw on error, use expect(...).rejects.toThrow() pattern
-- Example for functions that THROW on 404:
-  ```javascript
-  await provider.executeTest(async (mockProvider) => {{
-      await expect(getItem(mockProvider.url, 999)).rejects.toThrow();
-  }});
-  ```
-- Only generate 404 tests if you're confident about how the consumer handles it
+## CRITICAL: Error Handling Tests - READ CAREFULLY
+1. FIRST: Check if the consumer function has try/catch around the API call
+2. If NO try/catch exists (function just does `await axios.get(...)` and returns res.data):
+   - DO NOT generate 404 tests that expect null - they will FAIL
+   - If you must test 404, use: `await expect(fn()).rejects.toThrow()`
+3. If try/catch EXISTS and returns null on 404:
+   - You can test that 404 returns null
+4. DEFAULT: Skip error handling tests unless the function explicitly handles errors
+5. Focus on SUCCESS cases (200, 201) - they are more valuable for contract testing
+
+Example - function WITHOUT try/catch (like listCategories, getCategoryById):
+```javascript
+// This function THROWS on 404 - no try/catch
+export async function getCategoryById(baseUrl, categoryId) {
+    const res = await axios.get(`${baseUrl}/categories/${categoryId}`);
+    return res.data;  // No try/catch - 404 will throw!
+}
+// DO NOT test for null return - only test success case
+```
 
 ## Consumer and Provider Names
 - Derive consumer name from: the repository name or service making the API call
