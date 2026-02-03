@@ -143,7 +143,7 @@ def main():
     args = parser.parse_args()
     
     target_path = Path(args.target_repo).resolve()
-    test_dir = target_path / "tests" / "generated"
+    test_dir = target_path / "tests" / "contract-tests"
     
     # Initialize result
     result = WorkflowResult()
