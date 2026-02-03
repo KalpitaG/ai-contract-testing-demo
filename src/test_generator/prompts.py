@@ -482,11 +482,16 @@ Analyze the following Pull Request and generate Pact consumer contract tests if 
 
 ## Instructions
 1. Analyze the PR changes to determine if they affect API contracts
-2. If contract changes are detected, generate appropriate Pact consumer tests
-3. Use the detected language ({language}) and its Pact library
-4. Follow the file naming convention: {file_naming_convention}
-5. If existing contracts exist in Pactflow, consider whether to update or add new tests
-6. If no API contract changes are detected, set change_type to "no_contract_impact" and explain in skip_reason
+2. API contract changes include:
+   - New consumer functions that call API endpoints
+   - Modified request/response handling
+   - New endpoints in OpenAPI spec
+   - Changes to existing endpoint behavior
+3. If ANY new API-related code exists (consumer functions, API calls, endpoint handlers), generate Pact tests for them
+4. Use the detected language ({language}) and its Pact library
+5. Follow the file naming convention: {file_naming_convention}
+6. If existing contracts exist in Pactflow, consider whether to update or add new tests
+7. Only set change_type to "no_contract_impact" if the PR has ZERO API-related changes (e.g., only docs or CI changes)
 
 ## Consumer and Provider Names
 - Derive consumer name from: the repository name or service making the API call
