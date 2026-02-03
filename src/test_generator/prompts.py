@@ -358,8 +358,8 @@ OUTPUT_SCHEMA = {
             "properties": {
                 "change_type": {
                     "type": "string",
-                    "enum": ["new_endpoint", "modification", "breaking_change", "no_contract_impact"],
-                    "description": "Type of change detected"
+                    "enum": ["new_endpoint", "modification", "existing_coverage"],
+                    "description": "Type of change: new_endpoint for new APIs, modification for changes, existing_coverage for testing existing code"
                 },
                 "risk_level": {
                     "type": "string",
@@ -469,7 +469,7 @@ OUTPUT_SCHEMA = {
 # =============================================================================
 
 USER_PROMPT_TEMPLATE = """## Task
-Analyze the following Pull Request and generate Pact consumer contract tests if API contract changes are detected.
+Generate Pact consumer contract tests for the consumer functions in this codebase.
 
 ## Detected Language
 {language}
@@ -481,17 +481,17 @@ Analyze the following Pull Request and generate Pact consumer contract tests if 
 {context}
 
 ## Instructions
-1. Analyze the PR changes to determine if they affect API contracts
-2. API contract changes include:
-   - New consumer functions that call API endpoints
-   - Modified request/response handling
-   - New endpoints in OpenAPI spec
-   - Changes to existing endpoint behavior
-3. If ANY new API-related code exists (consumer functions, API calls, endpoint handlers), generate Pact tests for them
+1. ALWAYS generate Pact tests for consumer functions that make HTTP/API calls
+2. Look at the consumer code (src/consumer.js, etc.) and generate tests for ALL API-calling functions
+3. Each function that calls axios.get, axios.post, fetch, etc. needs a Pact test
 4. Use the detected language ({language}) and its Pact library
 5. Follow the file naming convention: {file_naming_convention}
-6. If existing contracts exist in Pactflow, consider whether to update or add new tests
-7. Only set change_type to "no_contract_impact" if the PR has ZERO API-related changes (e.g., only docs or CI changes)
+6. If OpenAPI spec is provided, use it to determine expected request/response shapes
+7. Generate tests even if the PR diff is small - test the EXISTING consumer functions
+
+## IMPORTANT: Generate tests for these consumer functions
+Look for functions like: getItem, listItems, createItem, getUserById, searchItems, getItemStats, etc.
+Each function that makes an API call should have a corresponding Pact test.
 
 ## Consumer and Provider Names
 - Derive consumer name from: the repository name or service making the API call

@@ -82,7 +82,7 @@ class GeneratedTest:
 @dataclass
 class AnalysisResult:
     """Analysis of the PR changes."""
-    change_type: str  # new_endpoint, modification, breaking_change, no_contract_impact
+    change_type: str  # new_endpoint, modification, existing_coverage
     risk_level: str   # low, medium, high
     affected_endpoints: list[str]
     summary: str
@@ -102,7 +102,7 @@ class GenerationResult:
     @property
     def has_tests(self) -> bool:
         """Check if any tests were generated."""
-        return len(self.tests) > 0 and self.analysis.change_type != "no_contract_impact"
+        return len(self.tests) > 0
 
 
 # =============================================================================
@@ -395,7 +395,7 @@ Generate corrected tests that address these errors.
             # Return empty result on parse failure
             return GenerationResult(
                 analysis=AnalysisResult(
-                    change_type="no_contract_impact",
+                    change_type="existing_coverage",
                     risk_level="low",
                     affected_endpoints=[],
                     summary="Failed to parse AI response",
@@ -410,7 +410,7 @@ Generate corrected tests that address these errors.
         # Parse analysis
         analysis_data = raw_response.get("analysis", {})
         analysis = AnalysisResult(
-            change_type=analysis_data.get("change_type", "no_contract_impact"),
+            change_type=analysis_data.get("change_type", "existing_coverage"),
             risk_level=analysis_data.get("risk_level", "low"),
             affected_endpoints=analysis_data.get("affected_endpoints", []),
             summary=analysis_data.get("summary", ""),
