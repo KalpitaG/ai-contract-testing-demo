@@ -73,17 +73,18 @@ class TestRunner:
     """
     
     # Test commands by language
+    # Uses project's native test command to respect their configuration
     TEST_COMMANDS = {
         "javascript": {
             "install": "npm install",
             "test": "npm test -- --testPathPattern={test_path} --passWithNoTests",
-            "test_single": "npx jest {test_file} --passWithNoTests",
+            "test_single": "npm test -- {test_file} --passWithNoTests",
             "check_tool": "npm",
         },
         "typescript": {
             "install": "npm install",
             "test": "npm test -- --testPathPattern={test_path} --passWithNoTests",
-            "test_single": "npx jest {test_file} --passWithNoTests",
+            "test_single": "npm test -- {test_file} --passWithNoTests",
             "check_tool": "npm",
         },
         "go": {

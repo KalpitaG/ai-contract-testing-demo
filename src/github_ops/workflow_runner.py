@@ -26,6 +26,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any
 from dataclasses import dataclass, asdict
+from src.github_ops.test_runner import TestRunner, TestResult
 
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -60,67 +61,37 @@ def run_tests_for_language(
     repo_path: Path
 ) -> tuple[bool, str]:
     """
-    Run tests based on detected language.
+    Run tests using the TestRunner class.
     
     Returns:
         Tuple of (success, error_output)
     """
     print(f"\n[Runner] Running {language} tests in {test_dir}...")
     
-    # Get list of test files
-    test_files = list(test_dir.glob("*"))
-    if not test_files:
-        return True, ""  # No tests to run
-    
     try:
-        if language in ["javascript", "typescript"]:
-            # Run Jest
-            result = subprocess.run(
-                ["npx", "jest", str(test_dir), "--passWithNoTests", "--no-coverage"],
-                cwd=repo_path,
-                capture_output=True,
-                text=True,
-                timeout=120
-            )
-        elif language == "go":
-            # Run go test
-            result = subprocess.run(
-                ["go", "test", "-v", f"./{test_dir.relative_to(repo_path)}/..."],
-                cwd=repo_path,
-                capture_output=True,
-                text=True,
-                timeout=120
-            )
-        elif language == "python":
-            # Run pytest
-            result = subprocess.run(
-                ["python", "-m", "pytest", str(test_dir), "-v"],
-                cwd=repo_path,
-                capture_output=True,
-                text=True,
-                timeout=120
-            )
-        else:
-            print(f"[Runner] Skipping validation for unsupported language: {language}")
-            return True, ""  # Skip validation for unknown languages
+        runner = TestRunner(
+            language=language,
+            repo_path=str(repo_path),
+            install_deps=False  # Already installed earlier in workflow
+        )
         
-        output = f"{result.stdout}\n{result.stderr}".strip()
+        # Get test files
+        test_files = [str(f.relative_to(repo_path)) for f in test_dir.glob("*")]
         
-        if result.returncode == 0:
+        if not test_files:
+            return True, ""  # No tests to run
+        
+        result = runner.run_tests(test_files=test_files)
+        
+        if result.passed:
             print("[Runner] ✅ Tests PASSED")
             return True, ""
         else:
-            print(f"[Runner] ❌ Tests FAILED (exit code: {result.returncode})")
-            # Extract relevant error lines
-            error_lines = extract_error_lines(output, language)
-            return False, error_lines
+            print(f"[Runner] ❌ Tests FAILED (exit code: {result.exit_code})")
+            return False, result.error_message or result.output
             
-    except subprocess.TimeoutExpired:
-        return False, "Tests timed out after 120 seconds"
-    except FileNotFoundError as e:
-        print(f"[Runner] Test runner not found: {e}")
-        return True, ""  # Can't run tests, skip validation
     except Exception as e:
+        print(f"[Runner] Error running tests: {e}")
         return False, str(e)
 
 
