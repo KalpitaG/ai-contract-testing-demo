@@ -499,6 +499,19 @@ Each function that makes an API call should have a corresponding Pact test.
 - Only specify headers in withRequest that the consumer code ACTUALLY sends
 - Always include Content-Type in willRespondWith for JSON responses
 
+## CRITICAL: Error Handling Tests
+- BEFORE generating error tests (e.g., 404), check if the consumer function handles that error
+- If the function has try/catch that returns null/undefined on 404, test that it returns null
+- If the function does NOT have try/catch (just makes the request), the 404 will throw an AxiosError/FetchError
+- For functions that throw on error, use expect(...).rejects.toThrow() pattern
+- Example for functions that THROW on 404:
+  ```javascript
+  await provider.executeTest(async (mockProvider) => {{
+      await expect(getItem(mockProvider.url, 999)).rejects.toThrow();
+  }});
+  ```
+- Only generate 404 tests if you're confident about how the consumer handles it
+
 ## Consumer and Provider Names
 - Derive consumer name from: the repository name or service making the API call
 - Derive provider name from: the API being called (often from OpenAPI spec title or base URL)
@@ -512,7 +525,6 @@ Each function that makes an API call should have a corresponding Pact test.
 
 Respond with valid JSON only, matching the required schema.
 """
-
 # =============================================================================
 # LANGUAGE-SPECIFIC PROMPT ADDITIONS
 # =============================================================================
