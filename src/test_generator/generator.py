@@ -191,7 +191,8 @@ class ContractTestGenerator:
         compressed_context: "CompressedContext",
         language: str,
         pact_library: Optional["PactLibraryInfo"],
-        file_naming_convention: str
+        file_naming_convention: str,
+        revision_feedback: Optional[str] = None
     ) -> GenerationResult:
         """
         Generate Pact contract tests from compressed context.
@@ -201,6 +202,7 @@ class ContractTestGenerator:
             language: Detected programming language
             pact_library: PactLibraryInfo object from repo_analyzer (or None)
             file_naming_convention: Test file naming pattern
+            revision_feedback: Optional feedback from failed test run for retry
             
         Returns:
             GenerationResult containing analysis and generated tests
@@ -224,6 +226,20 @@ class ContractTestGenerator:
             compressed_context=compressed_context.compressed_text,
             file_naming_convention=file_naming_convention
         )
+        
+        # Add revision feedback if this is a retry
+        if revision_feedback:
+            user_prompt += f"""
+
+## REVISION REQUEST
+The previous test generation failed with the following error. Please fix the issues:
+
+```
+{revision_feedback}
+```
+
+Generate corrected tests that address these errors.
+"""
         
         # Log input to Langfuse
         try:
