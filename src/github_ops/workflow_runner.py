@@ -45,6 +45,8 @@ class WorkflowResult:
     generated_files: list = None
     skip_reason: Optional[str] = None
     error: Optional[str] = None
+    is_revision: bool = False
+    stopped_early: bool = False  # True if same error detected
     
     def __post_init__(self):
         if self.generated_files is None:
@@ -95,6 +97,57 @@ def run_tests_for_language(
         return False, str(e)
 
 
+def errors_are_similar(error1: str, error2: str, threshold: float = 0.6) -> bool:
+    """
+    Check if two errors are similar enough to stop retrying.
+    
+    Uses word overlap comparison. If errors share >60% of keywords,
+    they're considered the same error that AI couldn't fix.
+    
+    Args:
+        error1: First error message
+        error2: Second error message  
+        threshold: Similarity threshold (0.0 to 1.0)
+        
+    Returns:
+        True if errors are similar enough to stop retrying
+    """
+    if not error1 or not error2:
+        return False
+    
+    # Common words to ignore
+    common_words = {
+        'the', 'a', 'an', 'is', 'at', 'in', 'on', 'for', 'to', 'of', 'and', 'or',
+        'it', 'be', 'as', 'was', 'with', 'that', 'this', 'from', 'by', 'are',
+        'not', 'but', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would',
+        'could', 'should', 'may', 'might', 'must', 'can', 'cannot', 'been', 'being',
+        'test', 'tests', 'error', 'failed', 'expected', 'received', 'line'
+    }
+    
+    def extract_keywords(text: str) -> set:
+        """Extract meaningful keywords from error text."""
+        words = set(text.lower().split())
+        return {w for w in words 
+                if w not in common_words 
+                and len(w) > 2 
+                and not w.isdigit()}
+    
+    words1 = extract_keywords(error1)
+    words2 = extract_keywords(error2)
+    
+    if not words1 or not words2:
+        return False
+    
+    # Calculate Jaccard similarity
+    intersection = len(words1 & words2)
+    union = len(words1 | words2)
+    similarity = intersection / union if union > 0 else 0
+    
+    print(f"[Runner] Error similarity: {similarity:.1%} (threshold: {threshold:.0%})")
+    
+    return similarity >= threshold
+
+
 def extract_error_lines(output: str, language: str) -> str:
     """Extract the most relevant error lines from test output."""
     lines = output.split("\n")
@@ -139,6 +192,7 @@ def main():
     parser.add_argument("--max-retries", type=int, default=2, help="Maximum retry attempts")
     parser.add_argument("--output-json", help="Path to write JSON result")
     parser.add_argument("--language", help="Override detected language")
+    parser.add_argument("--revision-feedback", help="Developer feedback for revision mode")
     
     args = parser.parse_args()
     
@@ -147,12 +201,22 @@ def main():
     
     # Initialize result
     result = WorkflowResult()
+    result.is_revision = args.revision_feedback is not None
+    
+    if result.is_revision:
+        print("\n" + "=" * 60)
+        print("REVISION MODE")
+        print("=" * 60)
+        feedback_preview = args.revision_feedback[:200] + "..." if len(args.revision_feedback) > 200 else args.revision_feedback
+        print(f"Developer feedback: {feedback_preview}")
     
     # Initialize pipeline
     config = GeneratorConfig.from_env()
     pipeline = ContractTestPipeline(generator_config=config)
     
-    revision_feedback = None
+    # Track errors for same-error detection
+    previous_error = None
+    revision_feedback = args.revision_feedback  # Start with developer feedback (if any)
     
     # Main retry loop
     for attempt in range(1, args.max_retries + 2):
@@ -218,7 +282,16 @@ def main():
             print(f"\n[Runner] ✅ Tests validated on attempt {attempt}")
             break
         
-        # Tests failed
+        # Step 4: Check if same error as before (stop early)
+        if previous_error and errors_are_similar(previous_error, error_output):
+            print(f"\n[Runner] ⚠️ Same error repeated - AI cannot fix this automatically")
+            result.stopped_early = True
+            result.error = "Same error occurred twice - stopping early"
+            break
+        
+        previous_error = error_output
+        
+        # Step 5: Prepare for retry (if attempts remaining)
         if attempt <= args.max_retries:
             print(f"\n[Runner] Tests failed, preparing retry...")
             
@@ -248,17 +321,22 @@ IMPORTANT:
     print(f"\n{'=' * 60}")
     print("WORKFLOW RESULT")
     print(f"{'=' * 60}")
+    print(f"Mode: {'REVISION' if result.is_revision else 'INITIAL GENERATION'}")
     print(f"Tests Generated: {result.has_tests}")
     print(f"Tests Validated: {result.tests_pass}")
     print(f"Attempts: {result.attempts}")
     print(f"Language: {result.language}")
+    if result.stopped_early:
+        print(f"Stopped Early: Yes (same error repeated)")
     if result.skip_reason:
         print(f"Skip Reason: {result.skip_reason}")
     if result.error:
         print(f"Error: {result.error}")
+    print(f"Generated Files: {result.generated_files}")
     
-    # Exit with appropriate code
-    sys.exit(0 if result.tests_pass or result.skip_reason else 1)
+    # Exit code: always 0 so workflow continues to create PR
+    # The workflow uses the JSON output to determine status
+    sys.exit(0)
 
 
 if __name__ == "__main__":

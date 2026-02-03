@@ -1,0 +1,363 @@
+# =============================================================================
+# AI Contract Test Revision - Reusable Workflow
+# =============================================================================
+#
+# Called by consumer repo when developer comments "ai-revise: <feedback>"
+#
+# FLOW:
+#   1. Consumer workflow detects ai-revise comment
+#   2. Calls this workflow with PR number and feedback
+#   3. This workflow regenerates tests with feedback
+#   4. Validates tests (runs them)
+#   5. Pushes new commit to Test PR
+#   6. Comments back with status
+#
+# MAX REVISIONS: 3 (enforced by counting ai-revise comments on PR)
+#
+# =============================================================================
+
+name: AI Contract Test Revision
+
+on:
+  workflow_call:
+    inputs:
+      repository:
+        description: 'Repository in owner/repo format'
+        required: true
+        type: string
+      test_pr_number:
+        description: 'Test PR number where ai-revise comment was made'
+        required: true
+        type: number
+      comment_body:
+        description: 'The full comment body starting with ai-revise:'
+        required: true
+        type: string
+    secrets:
+      GEMINI_API_KEY:
+        required: true
+      PACTFLOW_TOKEN:
+        required: true
+      PACTFLOW_BASE_URL:
+        required: true
+      PAT_TOKEN:
+        required: true
+      LANGFUSE_PUBLIC_KEY:
+        required: false
+      LANGFUSE_SECRET_KEY:
+        required: false
+
+jobs:
+  validate-and-extract:
+    name: Validate Revision Request
+    runs-on: ubuntu-latest
+    
+    outputs:
+      should_revise: ${{ steps.check.outputs.should_revise }}
+      feedback: ${{ steps.check.outputs.feedback }}
+      feature_pr_number: ${{ steps.check.outputs.feature_pr_number }}
+      test_branch: ${{ steps.check.outputs.test_branch }}
+      revision_count: ${{ steps.check.outputs.revision_count }}
+    
+    steps:
+      - name: Validate and Extract Info
+        id: check
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+          COMMENT_BODY: ${{ inputs.comment_body }}
+        run: |
+          # Get Test PR details
+          PR_DATA=$(gh pr view ${{ inputs.test_pr_number }} --json headRefName,baseRefName --repo ${{ inputs.repository }})
+          TEST_BRANCH=$(echo $PR_DATA | jq -r '.headRefName')
+          echo "test_branch=$TEST_BRANCH" >> $GITHUB_OUTPUT
+          
+          echo "Test PR: #${{ inputs.test_pr_number }}"
+          echo "Test Branch: $TEST_BRANCH"
+          
+          # Verify this is a contract-tests PR
+          if [[ ! "$TEST_BRANCH" =~ ^contract-tests/pr-[0-9]+$ ]]; then
+            echo "::error::Not a contract-tests PR branch: $TEST_BRANCH"
+            echo "should_revise=false" >> $GITHUB_OUTPUT
+            
+            gh pr comment ${{ inputs.test_pr_number }} --repo ${{ inputs.repository }} --body \
+              "⚠️ **ai-revise only works on Test PRs**
+              
+              This PR branch ($TEST_BRANCH) is not a contract-tests branch.
+              
+              Use \`ai-revise:\` on the Test PR created by the AI, not the feature PR.
+              
+              ---
+              *AI Contract Testing*"
+            exit 0
+          fi
+          
+          # Extract feature PR number from branch name (contract-tests/pr-123 -> 123)
+          FEATURE_PR_NUMBER=$(echo $TEST_BRANCH | sed 's/contract-tests\/pr-//')
+          echo "feature_pr_number=$FEATURE_PR_NUMBER" >> $GITHUB_OUTPUT
+          echo "Feature PR: #$FEATURE_PR_NUMBER"
+          
+          # Extract feedback (everything after "ai-revise:")
+          # Handle case-insensitive and various spacing
+          FEEDBACK=$(echo "$COMMENT_BODY" | sed -E 's/^[Aa][Ii]-[Rr][Ee][Vv][Ii][Ss][Ee]:[[:space:]]*//')
+          
+          if [ -z "$FEEDBACK" ] || [ "$FEEDBACK" = "$COMMENT_BODY" ]; then
+            echo "::error::No feedback found after ai-revise:"
+            echo "should_revise=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          echo "feedback<<EOF" >> $GITHUB_OUTPUT
+          echo "$FEEDBACK" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          echo "Feedback: $FEEDBACK"
+          
+          # Count existing ai-revise comments (case-insensitive)
+          REVISION_COUNT=$(gh pr view ${{ inputs.test_pr_number }} --json comments --repo ${{ inputs.repository }} | \
+            jq '[.comments[].body | select(test("^[Aa][Ii]-[Rr][Ee][Vv][Ii][Ss][Ee]:"))] | length')
+          echo "revision_count=$REVISION_COUNT" >> $GITHUB_OUTPUT
+          echo "Revision count: $REVISION_COUNT"
+          
+          # Check max revisions (3)
+          if [ "$REVISION_COUNT" -gt 3 ]; then
+            echo "Max revisions (3) exceeded"
+            echo "should_revise=false" >> $GITHUB_OUTPUT
+            
+            gh pr comment ${{ inputs.test_pr_number }} --repo ${{ inputs.repository }} --body \
+              "## ⚠️ Maximum Revisions Reached
+              
+              You've used all **3 AI revisions** for this PR.
+              
+              **Options:**
+              1. Edit the tests manually
+              2. Close this PR and re-trigger generation on the feature PR
+              
+              ---
+              *AI Contract Testing*"
+            exit 0
+          fi
+          
+          echo "should_revise=true" >> $GITHUB_OUTPUT
+          echo "✅ Revision request valid"
+
+  revise-tests:
+    name: Revise Contract Tests
+    needs: validate-and-extract
+    if: needs.validate-and-extract.outputs.should_revise == 'true'
+    runs-on: ubuntu-latest
+    
+    steps:
+      # =====================================================================
+      # SETUP
+      # =====================================================================
+      - name: Checkout central repo
+        uses: actions/checkout@v4
+        with:
+          repository: KalpitaG/ai-contract-testing-demo
+          token: ${{ secrets.PAT_TOKEN }}
+          path: ai-contract-testing
+      
+      - name: Checkout target repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.repository }}
+          token: ${{ secrets.PAT_TOKEN }}
+          path: target-repo
+          fetch-depth: 0
+          ref: ${{ needs.validate-and-extract.outputs.test_branch }}
+      
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: ai-contract-testing/requirements.txt
+      
+      - name: Set up Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+        continue-on-error: true
+      
+      - name: Install Python dependencies
+        run: pip install -r ai-contract-testing/requirements.txt
+      
+      - name: Install target repo dependencies
+        working-directory: target-repo
+        run: |
+          if [ -f "package.json" ]; then
+            npm install
+          fi
+        continue-on-error: true
+      
+      # =====================================================================
+      # ACKNOWLEDGE
+      # =====================================================================
+      - name: Post Processing Comment
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          REVISION_NUM="${{ needs.validate-and-extract.outputs.revision_count }}"
+          
+          gh pr comment ${{ inputs.test_pr_number }} --repo ${{ inputs.repository }} --body \
+            "## 🔄 Processing Revision $REVISION_NUM/3
+            
+            **Your feedback:**
+            > ${{ needs.validate-and-extract.outputs.feedback }}
+            
+            Regenerating tests... This may take a minute.
+            
+            ---
+            *AI Contract Testing*"
+      
+      # =====================================================================
+      # REGENERATE TESTS
+      # =====================================================================
+      - name: Run Revision
+        id: revise
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PACTFLOW_TOKEN: ${{ secrets.PACTFLOW_TOKEN }}
+          PACTFLOW_BASE_URL: ${{ secrets.PACTFLOW_BASE_URL }}
+          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          LANGFUSE_HOST: https://cloud.langfuse.com
+        run: |
+          cd ai-contract-testing
+          
+          # Build revision feedback
+          FEEDBACK="DEVELOPER REVISION REQUEST:
+
+          The developer reviewed the generated tests and wants these changes:
+          
+          ${{ needs.validate-and-extract.outputs.feedback }}
+          
+          INSTRUCTIONS:
+          1. Address ALL points mentioned by the developer
+          2. Keep the tests valid and runnable
+          3. Maintain proper imports and structure
+          4. Do NOT create fake client classes
+          5. Use actual consumer functions from the codebase"
+          
+          # Run the workflow runner with revision feedback
+          python -m src.github_ops.workflow_runner \
+            --repo "${{ inputs.repository }}" \
+            --pr "${{ needs.validate-and-extract.outputs.feature_pr_number }}" \
+            --target-repo "../target-repo" \
+            --max-retries 1 \
+            --revision-feedback "$FEEDBACK" \
+            --output-json "../revision-result.json" || true
+          
+          # Read results
+          if [ -f "../revision-result.json" ]; then
+            cat ../revision-result.json
+            echo "tests_pass=$(jq -r '.tests_pass' ../revision-result.json)" >> $GITHUB_OUTPUT
+            echo "has_tests=$(jq -r '.has_tests' ../revision-result.json)" >> $GITHUB_OUTPUT
+          else
+            echo "No result file generated"
+            echo "tests_pass=false" >> $GITHUB_OUTPUT
+            echo "has_tests=false" >> $GITHUB_OUTPUT
+          fi
+      
+      # =====================================================================
+      # COMMIT & PUSH
+      # =====================================================================
+      - name: Commit Revised Tests
+        id: commit
+        if: steps.revise.outputs.has_tests == 'true'
+        working-directory: target-repo
+        run: |
+          git config user.name "AI Contract Testing Bot"
+          git config user.email "ai-contract-testing@users.noreply.github.com"
+          
+          # Add test files
+          git add tests/contract-tests/ 2>/dev/null || git add tests/generated/ 2>/dev/null || true
+          
+          REVISION_NUM="${{ needs.validate-and-extract.outputs.revision_count }}"
+          
+          if [ "${{ steps.revise.outputs.tests_pass }}" = "true" ]; then
+            COMMIT_MSG="✅ Revision $REVISION_NUM: Tests updated (validated)"
+          else
+            COMMIT_MSG="⚠️ Revision $REVISION_NUM: Tests updated (needs review)"
+          fi
+          
+          # Check if there are changes to commit
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+            echo "committed=false" >> $GITHUB_OUTPUT
+          else
+            git commit -m "$COMMIT_MSG
+
+          Developer feedback: ${{ needs.validate-and-extract.outputs.feedback }}"
+            git push origin ${{ needs.validate-and-extract.outputs.test_branch }}
+            echo "committed=true" >> $GITHUB_OUTPUT
+          fi
+      
+      # =====================================================================
+      # COMMENT RESULTS
+      # =====================================================================
+      - name: Comment - Tests Validated
+        if: steps.revise.outputs.tests_pass == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          REVISION_NUM="${{ needs.validate-and-extract.outputs.revision_count }}"
+          REMAINING=$((3 - REVISION_NUM))
+          
+          gh pr comment ${{ inputs.test_pr_number }} --repo ${{ inputs.repository }} --body \
+            "## ✅ Revision $REVISION_NUM Complete - Tests Validated!
+            
+            I've regenerated the tests based on your feedback and they **pass validation**.
+            
+            **Your feedback was:**
+            > ${{ needs.validate-and-extract.outputs.feedback }}
+            
+            Please review the updated code. 
+            
+            If you need more changes, comment \`ai-revise: <feedback>\` ($REMAINING revisions remaining).
+            
+            If satisfied, **merge this PR** into your feature branch!
+            
+            ---
+            *AI Contract Testing*"
+      
+      - name: Comment - Validation Failed
+        if: steps.revise.outputs.has_tests == 'true' && steps.revise.outputs.tests_pass != 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          REVISION_NUM="${{ needs.validate-and-extract.outputs.revision_count }}"
+          REMAINING=$((3 - REVISION_NUM))
+          
+          gh pr comment ${{ inputs.test_pr_number }} --repo ${{ inputs.repository }} --body \
+            "## ⚠️ Revision $REVISION_NUM Complete - Validation Failed
+            
+            I've regenerated the tests but they **failed validation**.
+            
+            **Your feedback was:**
+            > ${{ needs.validate-and-extract.outputs.feedback }}
+            
+            The tests have been committed for your review. You may need to:
+            1. Fix issues manually
+            2. Comment \`ai-revise: <more specific feedback>\` ($REMAINING revisions remaining)
+            
+            ---
+            *AI Contract Testing*"
+      
+      - name: Comment - Generation Failed
+        if: steps.revise.outputs.has_tests != 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          gh pr comment ${{ inputs.test_pr_number }} --repo ${{ inputs.repository }} --body \
+            "## ❌ Revision Failed
+            
+            I couldn't regenerate the tests. This might be due to:
+            - API rate limits
+            - Missing context from feature PR
+            - AI generation errors
+            
+            Please check the workflow logs or try again later.
+            
+            ---
+            *AI Contract Testing*"
