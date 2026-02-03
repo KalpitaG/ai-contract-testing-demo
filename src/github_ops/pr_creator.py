@@ -40,7 +40,7 @@ class GeneratedTestFile:
     """Represents a generated test file to be committed."""
     filename: str
     content: str
-    path: str = "tests/generated"  # Default path in target repo
+    path: str = "tests/contract-tests"  # Default path in target repo
 
 
 class PRCreator:
@@ -80,7 +80,7 @@ class PRCreator:
         repo: str,
         pr_number: int,
         test_files: list[GeneratedTestFile],
-        base_path: str = "tests/generated"
+        base_path: str = "tests/contract-tests"
     ) -> PRCreationResult:
         """
         Create a PR with generated test files.

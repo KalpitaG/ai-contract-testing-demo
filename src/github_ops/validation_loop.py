@@ -76,7 +76,7 @@ class ValidationLoop:
         self,
         pipeline: ContractTestPipeline,
         max_retries: int = 2,
-        test_output_dir: str = "tests/generated"
+        test_output_dir: str = "tests/contract-tests"
     ):
         """
         Initialize the validation loop.

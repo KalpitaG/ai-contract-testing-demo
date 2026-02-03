@@ -84,10 +84,12 @@ func TestConsumerPact(t *testing.T) {
 ```
 
 ### JavaScript (pact-js with V3 spec)
+NOTE: Tests are placed in tests/contract-tests/ folder, so import paths must go TWO levels up to reach src/
 ```javascript
 import path from 'path';
 import { PactV3, MatchersV3 } from "@pact-foundation/pact";
-import { yourConsumerFunction } from "../src/consumer.js";
+// CRITICAL: Tests are in tests/contract-tests/ so use ../../src/ to reach the root src folder
+import { yourConsumerFunction } from "../../src/consumer.js";
 import { describe, test, expect } from "@jest/globals";
 
 const provider = new PactV3({
@@ -116,6 +118,7 @@ describe('Consumer Pact Tests', () => {
 
         await provider.executeTest(async (mockProvider) => {
             // IMPORTANT: Call the actual consumer function from src/consumer.js
+            // Tests are in tests/contract-tests/ so import path is ../../src/consumer.js
             const result = await yourConsumerFunction(mockProvider.url);
             expect(result).toBeDefined();
             expect(result.id).toBe(123);
@@ -125,10 +128,12 @@ describe('Consumer Pact Tests', () => {
 ```
 
 ### TypeScript (pact-js with V3 spec)
+NOTE: Tests are placed in tests/contract-tests/ folder, so import paths must go TWO levels up to reach src/
 ```typescript
 import { PactV3, MatchersV3 } from '@pact-foundation/pact';
 import path from 'path';
-import { yourConsumerFunction } from '../src/consumer';
+// CRITICAL: Tests are in tests/contract-tests/ so use ../../src/ to reach the root src folder
+import { yourConsumerFunction } from '../../src/consumer';
 
 const { eachLike, like, integer, string } = MatchersV3;
 
@@ -158,6 +163,7 @@ describe('Consumer Pact Tests', () => {
 
         await provider.executeTest(async (mockProvider) => {
             // IMPORTANT: Call the actual consumer function from src/consumer.ts
+            // Tests are in tests/contract-tests/ so import path is ../../src/consumer
             const result = await yourConsumerFunction(mockProvider.url);
             expect(result).toBeDefined();
             expect(result.id).toBe(123);
@@ -325,6 +331,7 @@ Include parameters when needed:
 7. ALWAYS include proper imports for the language
 8. For JavaScript: use .pact.test.js extension, import from "@jest/globals" for describe/test/expect
 9. For TypeScript: use .pact.spec.ts extension
+10. CRITICAL IMPORT PATHS: Tests are placed in tests/contract-tests/ folder. When importing from src/, use "../../src/" (TWO levels up), not "../src/" (one level up)
 
 ## CRITICAL: Consumer Function Usage
 - Look at the PR context for existing consumer functions (e.g., getItem, createItem, getUserById, searchItems)

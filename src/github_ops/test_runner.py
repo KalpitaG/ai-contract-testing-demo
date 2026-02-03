@@ -12,7 +12,7 @@ This module:
 
 Usage:
     runner = TestRunner(language="javascript", repo_path="/path/to/repo")
-    result = runner.run_tests(test_files=["tests/generated/user.pact.test.js"])
+    result = runner.run_tests(test_files=["tests/contract-tests/user.pact.test.js"])
     
     if result.passed:
         print("Tests passed!")
@@ -142,7 +142,7 @@ class TestRunner:
     def run_tests(
         self,
         test_files: list[str],
-        test_path: str = "tests/generated"
+        test_path: str = "tests/contract-tests"
     ) -> TestResult:
         """
         Run the generated tests.
