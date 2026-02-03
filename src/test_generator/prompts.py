@@ -493,6 +493,12 @@ Generate Pact consumer contract tests for the consumer functions in this codebas
 Look for functions like: getItem, listItems, createItem, getUserById, searchItems, getItemStats, etc.
 Each function that makes an API call should have a corresponding Pact test.
 
+## CRITICAL: Pact Request Matching Rules
+- For GET/DELETE requests: Do NOT include Content-Type header in withRequest - the consumer doesn't send it
+- For POST/PUT/PATCH requests: Include Content-Type header ONLY if the consumer actually sends it
+- Only specify headers in withRequest that the consumer code ACTUALLY sends
+- Always include Content-Type in willRespondWith for JSON responses
+
 ## Consumer and Provider Names
 - Derive consumer name from: the repository name or service making the API call
 - Derive provider name from: the API being called (often from OpenAPI spec title or base URL)
