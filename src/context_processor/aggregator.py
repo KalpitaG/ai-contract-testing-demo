@@ -69,6 +69,9 @@ class AggregatedContext:
     openapi_contexts: list[OpenAPIContext] = field(default_factory=list)  # Multiple specs
     pactflow_context: Optional[PactflowContext] = None
     
+    # Source files (consumer code, etc.)
+    source_files: dict[str, str] = field(default_factory=dict)  # filename -> content
+    
     # Metadata
     ticket_key: Optional[str] = None
     specs_used: list[str] = field(default_factory=list)
@@ -321,12 +324,22 @@ class ContextAggregator:
             print("[Aggregator] Skipping OpenAPI (no specs found)")
         
         # Step 5: Collect Pactflow context
-        print("[Aggregator] Step 5/5: Collecting Pactflow context...")
+        print("[Aggregator] Step 5/6: Collecting Pactflow context...")
         pactflow_context = None
         try:
             pactflow_context = self.pactflow_collector.collect()
         except Exception as e:
             warning = f"Failed to collect Pactflow context: {e}"
+            print(f"[Aggregator] Warning: {warning}")
+            warnings.append(warning)
+        
+        # Step 6: Collect consumer source files
+        print("[Aggregator] Step 6/6: Collecting consumer source files...")
+        source_files = {}
+        try:
+            source_files = self._collect_source_files(repo, repo_analysis.detected_language)
+        except Exception as e:
+            warning = f"Failed to collect source files: {e}"
             print(f"[Aggregator] Warning: {warning}")
             warnings.append(warning)
         
@@ -339,6 +352,7 @@ class ContextAggregator:
             jira_context=jira_context,
             openapi_contexts=openapi_contexts,
             pactflow_context=pactflow_context,
+            source_files=source_files,
             ticket_key=ticket_key,
             specs_used=specs_to_use,
             collection_warnings=warnings
@@ -399,3 +413,48 @@ class ContextAggregator:
         except Exception as e:
             print(f"[Aggregator] Error fetching {spec_path}: {e}")
             return None
+
+    def _collect_source_files(self, repo: str, language: str) -> dict[str, str]:
+        """
+        Collect key source files that contain consumer/API code.
+        
+        Args:
+            repo: Repository name
+            language: Detected programming language
+            
+        Returns:
+            Dict mapping filename to content
+        """
+        source_files = {}
+        gh_repo = self.github_collector.client.get_repo(repo)
+        
+        # Define patterns for consumer/API files by language
+        patterns = {
+            "javascript": ["src/consumer.js", "src/client.js", "src/api.js", "lib/consumer.js", "consumer.js"],
+            "typescript": ["src/consumer.ts", "src/client.ts", "src/api.ts", "lib/consumer.ts", "consumer.ts"],
+            "python": ["src/consumer.py", "src/client.py", "src/api.py", "consumer.py", "client.py"],
+            "java": ["src/main/java/**/Consumer.java", "src/main/java/**/Client.java", "src/main/java/**/ApiClient.java"],
+            "go": ["consumer.go", "client.go", "api.go", "internal/consumer/consumer.go"],
+        }
+        
+        files_to_check = patterns.get(language, [])
+        
+        for file_path in files_to_check:
+            try:
+                # Skip glob patterns for now (would need recursive search)
+                if "*" in file_path:
+                    continue
+                    
+                content = gh_repo.get_contents(file_path)
+                if content and hasattr(content, 'decoded_content'):
+                    file_content = content.decoded_content.decode("utf-8")
+                    source_files[file_path] = file_content
+                    print(f"  [OK] Collected {file_path} ({len(file_content)} chars)")
+            except Exception:
+                # File doesn't exist, skip
+                pass
+        
+        if not source_files:
+            print("  [WARN] No consumer source files found")
+        
+        return source_files

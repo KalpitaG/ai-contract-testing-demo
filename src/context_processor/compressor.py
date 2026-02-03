@@ -149,6 +149,11 @@ class ContextCompressor:
         # Pact library info (keep full - AI needs this)
         sections.append(self._format_pact_library(context))
         
+        # Source files (consumer code - CRITICAL for test generation)
+        if context.source_files:
+            sections.append(self._format_source_files(context.source_files))
+            strategies_applied.append("source_files")
+        
         # GitHub PR context (compress)
         if context.github_context:
             sections.append(self._compress_github(context.github_context))
@@ -216,6 +221,25 @@ Repository: {context.repo}
 PR: #{context.pr_number}
 Language: {context.detected_language}
 Test Directory: {context.test_directory}"""
+    
+    def _format_source_files(self, source_files: dict[str, str]) -> str:
+        """Format source files for AI consumption - CRITICAL for test generation."""
+        if not source_files:
+            return ""
+        
+        lines = ["=== CONSUMER SOURCE CODE ==="]
+        lines.append("These are the consumer functions that need Pact tests.")
+        lines.append("Generate tests for EACH function that makes HTTP/API calls.")
+        lines.append("")
+        
+        for filename, content in source_files.items():
+            lines.append(f"### {filename}")
+            lines.append("```")
+            lines.append(content)
+            lines.append("```")
+            lines.append("")
+        
+        return "\n".join(lines)
     
     def _format_pact_library(self, context: AggregatedContext) -> str:
         """Format Pact library info (keep full - AI needs exact syntax)."""
