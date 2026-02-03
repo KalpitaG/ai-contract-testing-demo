@@ -271,13 +271,15 @@ def _run_main(args):
         
         generated_files = []
         for test in pipeline_result.generated_tests:
-            test_file = test_dir / test.filename
+            # Extract just the filename (AI may return full path like "tests/contract-tests/name.js")
+            filename = Path(test.filename).name
+            test_file = test_dir / filename
             if test_file.exists():
-                print(f"  Overwriting: {test.filename}")
+                print(f"  Overwriting: {filename}")
             else:
-                print(f"  Creating: {test.filename}")
+                print(f"  Creating: {filename}")
             test_file.write_text(test.code)
-            generated_files.append(test.filename)
+            generated_files.append(filename)
         
         result.generated_files = generated_files
         
