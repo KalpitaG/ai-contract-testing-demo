@@ -157,7 +157,7 @@ jobs:
           TEST_BRANCH="contract-tests/pr-${{ inputs.pr_number }}"
           
           # Check if tests directory has files
-          if [ ! -d "tests/generated" ] || [ -z "$(ls -A tests/generated 2>/dev/null)" ]; then
+          if [ ! -d "tests/contract-tests" ] || [ -z "$(ls -A tests/contract-tests 2>/dev/null)" ]; then
             echo "No generated tests found"
             echo "pr_created=false" >> $GITHUB_OUTPUT
             exit 0
@@ -180,7 +180,7 @@ jobs:
           git config user.email "ai-contract-testing@users.noreply.github.com"
           
           # Commit
-          git add tests/generated/
+          git add tests/contract-tests/
           
           VALIDATED="${{ steps.validate.outputs.tests_validated }}"
           ATTEMPTS="${{ steps.validate.outputs.attempts }}"
