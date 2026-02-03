@@ -224,30 +224,45 @@ def _run_main(args):
         feedback_preview = args.revision_feedback[:200] + "..." if len(args.revision_feedback) > 200 else args.revision_feedback
         print(f"Developer feedback: {feedback_preview}")
         
-        # Collect existing test files from the test directory
+        # Only collect tests that were generated in THIS PR (not old tests from main)
+        # We do this by checking git status for new/modified files in tests/contract-tests/
         if test_dir.exists():
-            print("\n[Runner] Collecting existing tests for revision...")
-            for test_file in test_dir.glob("*.test.js"):
-                try:
-                    content = test_file.read_text()
-                    existing_tests[test_file.name] = content
-                    print(f"  [OK] {test_file.name} ({len(content)} chars)")
-                except Exception as e:
-                    print(f"  [WARN] Failed to read {test_file.name}: {e}")
-            
-            # Also check for .test.ts files
-            for test_file in test_dir.glob("*.test.ts"):
-                try:
-                    content = test_file.read_text()
-                    existing_tests[test_file.name] = content
-                    print(f"  [OK] {test_file.name} ({len(content)} chars)")
-                except Exception as e:
-                    print(f"  [WARN] Failed to read {test_file.name}: {e}")
-            
-            if existing_tests:
-                print(f"  Found {len(existing_tests)} existing test files")
-            else:
-                print("  [WARN] No existing tests found to revise")
+            print("\n[Runner] Collecting tests generated for this PR...")
+            import subprocess
+            try:
+                # Get list of new/modified test files in this branch
+                git_result = subprocess.run(
+                    ["git", "diff", "--name-only", "origin/main", "--", "tests/contract-tests/"],
+                    cwd=target_path,
+                    capture_output=True,
+                    text=True
+                )
+                changed_test_files = [f.split("/")[-1] for f in git_result.stdout.strip().split("\n") if f.endswith(".test.js") or f.endswith(".test.ts")]
+                
+                if changed_test_files:
+                    for filename in changed_test_files:
+                        test_file = test_dir / filename
+                        if test_file.exists():
+                            try:
+                                content = test_file.read_text()
+                                existing_tests[filename] = content
+                                print(f"  [OK] {filename} ({len(content)} chars)")
+                            except Exception as e:
+                                print(f"  [WARN] Failed to read {filename}: {e}")
+                    print(f"  Found {len(existing_tests)} tests from this PR")
+                else:
+                    print("  [WARN] No changed test files found in this PR")
+            except Exception as e:
+                print(f"  [WARN] Git diff failed: {e}, falling back to all tests")
+                # Fallback: collect all (but limit to 5 most recent)
+                test_files = sorted(test_dir.glob("*.test.js"), key=lambda f: f.stat().st_mtime, reverse=True)[:5]
+                for test_file in test_files:
+                    try:
+                        content = test_file.read_text()
+                        existing_tests[test_file.name] = content
+                        print(f"  [OK] {test_file.name} ({len(content)} chars)")
+                    except Exception:
+                        pass
     
     # Initialize pipeline
     config = GeneratorConfig.from_env()

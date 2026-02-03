@@ -250,10 +250,10 @@ You are revising EXISTING tests, not generating new ones from scratch.
 """
             user_prompt += """
 ### Instructions:
-1. Apply the developer's requested changes to these existing tests
-2. Keep all other tests unchanged unless they have errors
-3. Return ALL tests (modified and unmodified) so no tests are lost
-4. Do NOT regenerate from scratch - revise what exists
+1. Apply the developer's requested changes to the relevant tests
+2. Return ONLY the tests that need modification - do not return unchanged tests
+3. If a test doesn't need changes, don't include it in the output
+4. Keep the same filename for modified tests
 5. Fix any errors mentioned in the feedback
 """
         elif revision_feedback:
