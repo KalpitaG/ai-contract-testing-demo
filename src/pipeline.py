@@ -395,6 +395,8 @@ class ContractTestPipeline:
             "endpoint", "contract",
             "rest", "http",
             "pact", "pactflow",
+            "consumer", "provider", "client", "api",
+            "service", "adapter", "gateway",
         )
         if any(any(sig in p for sig in api_filename_signals) for p in filenames):
             return True
