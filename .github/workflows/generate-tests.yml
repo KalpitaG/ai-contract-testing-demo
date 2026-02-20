@@ -141,6 +141,34 @@ jobs:
           fi
       
       # =====================================================================
+      # PUBLISH PACT TO PACTFLOW (feature branch)
+      # =====================================================================
+      - name: Publish Pact to Pactflow
+        if: steps.validate.outputs.tests_validated == 'true'
+        working-directory: target-repo
+        env:
+          PACTFLOW_BASE_URL: ${{ secrets.PACTFLOW_BASE_URL }}
+          PACTFLOW_TOKEN: ${{ secrets.PACTFLOW_TOKEN }}
+          GITHUB_SHA: ${{ github.sha }}
+          GIT_BRANCH: contract-tests/pr-${{ inputs.pr_number }}
+        run: |
+          # Run the contract tests to generate ./pacts directory
+          # (tests already validated above, this re-runs to produce pact JSON files)
+          NODE_OPTIONS='--experimental-vm-modules' npx jest tests/contract-tests/ \
+            --testPathPattern='\.pact\.test\.' \
+            --forceExit 2>/dev/null || true
+
+          # Publish if pact files were generated
+          if [ -d "./pacts" ] && [ -n "$(ls -A ./pacts 2>/dev/null)" ]; then
+            echo "Found pact files, publishing to Pactflow..."
+            ls -la ./pacts/
+            npm run ai:publish:pact:feature
+            echo "✅ Pact published successfully to branch: $GIT_BRANCH"
+          else
+            echo "⚠️ No pact files found in ./pacts - skipping publish"
+          fi
+
+      # =====================================================================
       # CREATE PR
       # =====================================================================
       - name: Create PR with Tests
