@@ -95,7 +95,8 @@ class ProviderGenerator:
         self,
         provider_name: str,
         provider_repo_path: str,
-        output_dir: Optional[str] = None
+        output_dir: Optional[str] = None,
+        pact_url: Optional[str] = None 
     ) -> ProviderGenerationResult:
         """
         Generate provider verification tests with state handlers.
@@ -115,7 +116,7 @@ class ProviderGenerator:
         # Step 1: Fetch pacts
         print("\n📥 Step 1: Fetching pacts from broker...")
         try:
-            pact_context = self.pact_fetcher.fetch_provider_pacts(provider_name)
+            pact_context = self.pact_fetcher.fetch_provider_pacts(provider_name, pact_url=pact_url)
         except Exception as e:
             return ProviderGenerationResult(
                 success=False,
@@ -451,7 +452,8 @@ class ProviderGenerator:
 def generate_provider_tests(
     provider_name: str,
     provider_repo_path: str,
-    output_dir: str = None
+    output_dir: str = None,
+    pact_url: str = None
 ) -> ProviderGenerationResult:
     """
     Generate provider verification tests.
@@ -460,12 +462,13 @@ def generate_provider_tests(
         provider_name: Name of the provider (must match Pactflow)
         provider_repo_path: Path to the provider repository
         output_dir: Optional output directory
-        
+        pact_url: Optional specific pact URL from Pactflow webhook
+
     Returns:
         ProviderGenerationResult
     """
     generator = ProviderGenerator()
-    return generator.generate(provider_name, provider_repo_path, output_dir)
+    return generator.generate(provider_name, provider_repo_path, output_dir, pact_url)
 
 
 if __name__ == "__main__":

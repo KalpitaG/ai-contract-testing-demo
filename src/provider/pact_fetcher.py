@@ -103,19 +103,52 @@ class PactFetcher:
         return headers
     
     @observe(name="fetch_provider_pacts")
-    def fetch_provider_pacts(self, provider_name: str) -> PactContext:
+    def fetch_provider_pacts(
+        self, 
+        provider_name: str,
+        pact_url: Optional[str] = None 
+        ) -> PactContext:
         """
-        Fetch all pacts for a provider and extract context.
+        Fetch pacts for a provider and extract context.
+        If pact_url is provided (webhook trigger), fetches only that specific pact.
+        Otherwise fetches all latest pacts for the provider.
         
         Args:
             provider_name: Name of the provider service
+            pact_url: Optional specific pact URL from Pactflow webhook
             
         Returns:
             PactContext with all extracted information
         """
-        print(f"\n📥 Fetching pacts for provider: {provider_name}")
-        
-        # Get list of pacts for this provider
+        # If specific pact URL provided (webhook trigger), fetch just that one
+        if pact_url:
+            print(f"\n📥 Fetching specific pact from webhook: {pact_url}")
+            pact_data = self._fetch_single_pact(pact_url)
+            if not pact_data:
+                return PactContext(
+                    provider_name=provider_name,
+                    consumers=[],
+                    provider_states=[],
+                    interactions=[],
+                    raw_pacts=[]
+                )
+            # Parse the single pact directly
+            consumers = [pact_data.get("consumer", {}).get("name", "Unknown")]
+            all_interactions = [
+                self._parse_interaction(i)
+                for i in pact_data.get("interactions", [])
+            ]
+            all_states = {i.provider_state for i in all_interactions if i.provider_state}
+            return PactContext(
+                provider_name=provider_name,
+                consumers=consumers,
+                provider_states=sorted(list(all_states)),
+                interactions=all_interactions,
+                raw_pacts=[pact_data]
+            )
+
+        # Otherwise fetch all latest pacts (push/label trigger)
+        print(f"\n📥 Fetching all latest pacts for provider: {provider_name}")
         pacts_url = f"{self.broker_url}/pacts/provider/{provider_name}/latest"
         
         try:

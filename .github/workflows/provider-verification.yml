@@ -131,7 +131,8 @@ jobs:
           result = generate_provider_tests(
               provider_name='${{ inputs.provider_name }}',
               provider_repo_path='../provider-repo',
-              output_dir='../provider-repo/tests/contract-verification'
+              output_dir='../provider-repo/tests/contract-verification',
+              pact_url='${{ inputs.pact_url }}' or None
           )
           
           # Write outputs
@@ -276,6 +277,7 @@ jobs:
           PACT_BROKER_TOKEN: ${{ secrets.PACTFLOW_TOKEN }}
           PACTFLOW_BASE_URL: ${{ secrets.PACTFLOW_BASE_URL }}
           PACTFLOW_TOKEN: ${{ secrets.PACTFLOW_TOKEN }}
+          PACT_URL: ${{ inputs.pact_url }}
           PACT_PROVIDER: ${{ inputs.provider_name }}
           GIT_COMMIT: ${{ github.sha }}
           GIT_BRANCH: ${{ github.head_ref || github.ref_name }}
