@@ -22,7 +22,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 from pathlib import Path
-from langfuse.decorators import observe
+from langfuse import observe
 
 
 @dataclass
