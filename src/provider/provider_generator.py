@@ -26,7 +26,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 from pathlib import Path
-from langfuse.decorators import observe
+from langfuse import observe
 
 # Relative imports (same package)
 from .pact_fetcher import PactFetcher, PactContext

@@ -19,7 +19,7 @@ import os
 import requests
 from dataclasses import dataclass, field
 from typing import Optional
-from langfuse.decorators import observe
+from langfuse import observe
 
 
 @dataclass
