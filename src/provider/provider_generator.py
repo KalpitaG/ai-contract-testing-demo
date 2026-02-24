@@ -322,7 +322,15 @@ class ProviderGenerator:
         return generated_code
     
     def _clean_generated_code(self, code: str) -> str:
-        """Clean up AI-generated code by removing markdown fences."""
+        """
+        Clean up AI-generated code.
+        
+        Handles two response formats:
+        1. JSON with a "code" field (from structured output prompts)
+        2. Raw code with optional markdown fences
+        """
+        import json
+        
         code = code.strip()
         
         # Remove markdown code blocks for any language
@@ -338,7 +346,30 @@ class ProviderGenerator:
         if code.endswith("```"):
             code = code[:-3]
         
-        return code.strip()
+        code = code.strip()
+        
+        # Check if Gemini returned JSON with a "code" field
+        # This happens when the prompt requests structured JSON output
+        if code.startswith("{"):
+            try:
+                parsed = json.loads(code)
+                # Extract code from nested structure: { "test": { "code": "..." } }
+                if isinstance(parsed, dict):
+                    if "test" in parsed and isinstance(parsed["test"], dict):
+                        extracted = parsed["test"].get("code", "")
+                        if extracted:
+                            print("  📦 Extracted code from JSON response (test.code)")
+                            return extracted.strip()
+                    # Flat structure: { "code": "..." }
+                    if "code" in parsed:
+                        extracted = parsed["code"]
+                        if extracted:
+                            print("  📦 Extracted code from JSON response (code)")
+                            return extracted.strip()
+            except json.JSONDecodeError:
+                pass  # Not valid JSON — treat as raw code
+        
+        return code
     
     def _validate_generated_code(
         self, code: str, expected_states: list, language: str = "javascript"
