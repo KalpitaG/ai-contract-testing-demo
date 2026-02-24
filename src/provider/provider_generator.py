@@ -334,10 +334,12 @@ class ProviderGenerator:
         code = code.strip()
         
         # Remove markdown code blocks for any language
+        # IMPORTANT: longer prefixes first — "```json" before "```js", "```javascript" before "```java"
         for prefix in [
-            "```javascript", "```js", "```typescript", "```ts",
-            "```go", "```java", "```kotlin", "```python", "```py",
-            "```json", "```"
+            "```javascript", "```typescript", "```json",
+            "```kotlin", "```python",
+            "```js", "```ts", "```go", "```java", "```py",
+            "```"
         ]:
             if code.startswith(prefix):
                 code = code[len(prefix):]
