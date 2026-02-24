@@ -533,31 +533,31 @@ PROVIDER_GENERATION_PROMPT = """# Provider Verification Test Generation
 
 ## 1. Provider Language
 
-{provider_language}
+<<PROVIDER_LANGUAGE>>
 
 ## 2. Provider Information (from source code analysis)
 
-{provider_context}
+<<PROVIDER_CONTEXT>>
 
 ## 3. Pact Information (from consumers via Pact Broker)
 
-{pact_context}
+<<PACT_CONTEXT>>
 
 ## 4. Provider States That Need Handlers
 
 Each state below MUST have a corresponding handler in the generated code:
 
-{provider_states}
+<<PROVIDER_STATES>>
 
 ## 5. Expected Responses Per State
 
 The state handler must set up data so the provider returns EXACTLY these responses:
 
-{expected_responses}
+<<EXPECTED_RESPONSES>>
 
 ## 6. Storage Type & Data Access Hints
 
-{storage_hints}
+<<STORAGE_HINTS>>
 
 ---
 
@@ -677,21 +677,21 @@ Generate the provider verification test now.
 PROVIDER_REVISION_PROMPT = """# Provider Test Revision Request
 
 ## Provider Language
-{provider_language}
+<<PROVIDER_LANGUAGE>>
 
 ## The Previously Generated Code (FAILED)
 
 ```
-{original_code}
+<<ORIGINAL_CODE>>
 ```
 
 ## Error From Test Execution
 
 ```
-{error_message}
+<<ERROR_MESSAGE>>
 ```
 
-{developer_feedback_section}
+<<DEVELOPER_FEEDBACK_SECTION>>
 
 ---
 
@@ -876,13 +876,14 @@ def build_provider_generation_prompt(
 
     language_info = get_provider_library_prompt(provider_language)
 
-    return PROVIDER_GENERATION_PROMPT.format(
-        provider_language=f"{provider_language}\n\n{language_info}",
-        pact_context=pact_context,
-        provider_context=provider_context,
-        provider_states=states_formatted,
-        storage_hints=hints_formatted,
-        expected_responses=responses_formatted or "See pact context above for expected response bodies.",
+    return (
+        PROVIDER_GENERATION_PROMPT
+        .replace("<<PROVIDER_LANGUAGE>>", f"{provider_language}\n\n{language_info}")
+        .replace("<<PACT_CONTEXT>>", pact_context)
+        .replace("<<PROVIDER_CONTEXT>>", provider_context)
+        .replace("<<PROVIDER_STATES>>", states_formatted)
+        .replace("<<STORAGE_HINTS>>", hints_formatted)
+        .replace("<<EXPECTED_RESPONSES>>", responses_formatted or "See pact context above for expected response bodies.")
     )
 
 
@@ -908,9 +909,10 @@ def build_provider_revision_prompt(
     if revision_feedback:
         feedback_section = f"## Developer Feedback\n{revision_feedback}"
 
-    return PROVIDER_REVISION_PROMPT.format(
-        provider_language=provider_language,
-        original_code=original_code,
-        error_message=error_message,
-        developer_feedback_section=feedback_section,
+    return (
+        PROVIDER_REVISION_PROMPT
+        .replace("<<PROVIDER_LANGUAGE>>", provider_language)
+        .replace("<<ORIGINAL_CODE>>", original_code)
+        .replace("<<ERROR_MESSAGE>>", error_message)
+        .replace("<<DEVELOPER_FEEDBACK_SECTION>>", feedback_section)
     )

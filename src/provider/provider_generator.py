@@ -1,7 +1,6 @@
 """
 Provider Generator Module
 =========================
-
 Main module for AI-powered provider verification test generation.
 
 This module:
@@ -26,6 +25,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 from pathlib import Path
+
 from langfuse import observe
 
 # Relative imports (same package)
@@ -33,6 +33,7 @@ from .pact_fetcher import PactFetcher, PactContext
 from .provider_analyzer import ProviderAnalyzer, ProviderCodeContext
 from .provider_prompts import (
     PROVIDER_SYSTEM_PROMPT,
+    PROVIDER_LANGUAGE_CONFIG,
     build_provider_generation_prompt,
     build_provider_revision_prompt
 )
@@ -104,7 +105,8 @@ class ProviderGenerator:
         Args:
             provider_name: Name of the provider (must match Pactflow)
             provider_repo_path: Path to the provider repository
-            output_dir: Where to write the generated file (default: provider_repo/tests/contract-verification)
+            output_dir: Where to write the generated file
+            pact_url: Specific pact URL from Pactflow webhook (PACT_URL env var)
             
         Returns:
             ProviderGenerationResult with generated code
@@ -161,6 +163,12 @@ class ProviderGenerator:
                 error=f"Failed to analyze provider code: {e}"
             )
         
+        print(f"  📁 Language: {provider_context.language}")
+        print(f"  🔧 Framework: {provider_context.framework}")
+        print(f"  📊 Route files: {len(provider_context.route_files)}")
+        print(f"  📂 Data files: {len(provider_context.data_files)}")
+        print(f"  💾 Storage type: {provider_context.storage_type}")
+        print(f"  📦 Data models: {len(provider_context.data_models)}")
         print(f"  ✅ Language: {provider_context.language}")
         print(f"  ✅ Framework: {provider_context.framework}")
         print(f"  ✅ Storage type: {provider_context.storage_type}")
@@ -194,11 +202,30 @@ class ProviderGenerator:
         print("\n✅ Step 5: Validating generated code...")
         quality_score, quality_issues = self._validate_generated_code(
             generated_code,
-            pact_context.provider_states
+            pact_context.provider_states,
+            provider_context.language
         )
         
+        # If critical issues found, fail early with clear message
+        critical_issues = [i for i in quality_issues if i.startswith("CRITICAL:")]
+        if critical_issues:
+            return ProviderGenerationResult(
+                success=False,
+                provider_name=provider_name,
+                generated_code=generated_code,
+                output_path="",
+                provider_states=pact_context.provider_states,
+                consumers=pact_context.consumers,
+                storage_type=provider_context.storage_type,
+                error=f"Code validation failed: {'; '.join(critical_issues)}",
+                quality_score=quality_score,
+                quality_issues=quality_issues
+            )
+        
         # Step 6: Write output
-        output_path = self._determine_output_path(provider_repo_path, output_dir)
+        output_path = self._determine_output_path(
+            provider_repo_path, output_dir, provider_context.language
+        )
         print(f"\n📝 Step 6: Writing to {output_path}")
         
         try:
@@ -237,7 +264,7 @@ class ProviderGenerator:
         )
     
     def _build_expected_responses(self, pact_context: PactContext) -> dict:
-        """Build a map of state -> expected response data."""
+        """Build a map of state -> expected response data from pact interactions."""
         expected = {}
         
         for interaction in pact_context.interactions:
@@ -265,7 +292,7 @@ class ProviderGenerator:
     ) -> str:
         """Generate provider test code using Gemini AI."""
         
-        # Build the prompt
+        # Build the prompt — now with provider_language for multi-language support
         prompt = build_provider_generation_prompt(
             provider_name=provider_name,
             provider_language=provider_context.language,
@@ -282,7 +309,7 @@ class ProviderGenerator:
             contents=prompt,
             config={
                 "system_instruction": PROVIDER_SYSTEM_PROMPT,
-                "temperature": 0.2,  # Lower temperature for more consistent code
+                "temperature": 0.2,
                 "max_output_tokens": 8000
             }
         )
@@ -295,25 +322,36 @@ class ProviderGenerator:
         return generated_code
     
     def _clean_generated_code(self, code: str) -> str:
-        """Clean up AI-generated code."""
+        """Clean up AI-generated code by removing markdown fences."""
         code = code.strip()
         
-        # Remove markdown code blocks
-        if code.startswith("```javascript"):
-            code = code[13:]
-        elif code.startswith("```js"):
-            code = code[5:]
-        elif code.startswith("```"):
-            code = code[3:]
+        # Remove markdown code blocks for any language
+        for prefix in [
+            "```javascript", "```js", "```typescript", "```ts",
+            "```go", "```java", "```kotlin", "```python", "```py",
+            "```json", "```"
+        ]:
+            if code.startswith(prefix):
+                code = code[len(prefix):]
+                break
         
         if code.endswith("```"):
             code = code[:-3]
         
         return code.strip()
     
-    def _validate_generated_code(self, code: str, expected_states: list) -> tuple:
+    def _validate_generated_code(
+        self, code: str, expected_states: list, language: str = "javascript"
+    ) -> tuple:
         """
-        Validate the generated code.
+        Validate the generated code for correctness.
+        
+        Checks for:
+        - Required Pact imports/patterns per language
+        - State handler coverage
+        - Hallucinated/non-existent APIs (critical check)
+        - Basic test structure
+        - PACT_URL handling
         
         Returns:
             (quality_score, list of issues)
@@ -321,78 +359,138 @@ class ProviderGenerator:
         issues = []
         score = 10.0
         
-        # Check for required imports
-        if "require('@pact-foundation/pact')" not in code and "from '@pact-foundation/pact'" not in code:
-            issues.append("Missing Pact import")
-            score -= 1.0
-        
-        # Check for Verifier usage
-        if "Verifier" not in code:
-            issues.append("Missing Verifier class usage")
-            score -= 2.0
-        
-        # Check for stateHandlers
-        if "stateHandlers" not in code:
-            issues.append("Missing stateHandlers configuration")
-            score -= 3.0
-        
-        # Check that all expected states have handlers
-        for state in expected_states:
-            # Check if the state name appears in the code
-            if state not in code and state.replace("'", "\\'") not in code:
-                issues.append(f"Missing handler for state: '{state}'")
-                score -= 0.5
-        
-        # Check for basic test structure
-        if "describe(" not in code:
-            issues.append("Missing describe block")
-            score -= 0.5
-        
-        if "it(" not in code and "test(" not in code:
-            issues.append("Missing test case")
-            score -= 0.5
-        
-        # Check for server setup
-        if "listen(" not in code:
-            issues.append("Missing server start")
-            score -= 0.5
-        
-        # Check for environment variables
-        if "PACTFLOW_BASE_URL" not in code and "PACT_BROKER" not in code:
-            issues.append("Missing Pactflow URL configuration")
-            score -= 0.5
-        
-        # Check for hallucinated APIs (anti-hallucination guard)
+        # =====================================================================
+        # CRITICAL: Anti-hallucination checks (run FIRST — these are blockers)
+        # =====================================================================
         hallucinated_patterns = [
-            ('.__get__(', 'Hallucinated API: .__get__() does not exist in standard Node.js'),
-            ('.__set__(', 'Hallucinated API: .__set__() does not exist in standard Node.js'),
-            ("require('rewire')", 'Hallucinated dependency: rewire is not installed'),
-            ('require("rewire")', 'Hallucinated dependency: rewire is not installed'),
-            ("require('proxyquire')", 'Hallucinated dependency: proxyquire is not installed'),
-            ('require("proxyquire")', 'Hallucinated dependency: proxyquire is not installed'),
+            ('.__get__(', 'CRITICAL: .__get__() does not exist in standard Node.js — do NOT use rewire-style APIs'),
+            ('.__set__(', 'CRITICAL: .__set__() does not exist in standard Node.js — do NOT use rewire-style APIs'),
+            ("require('rewire')", 'CRITICAL: rewire is not installed in this project'),
+            ('require("rewire")', 'CRITICAL: rewire is not installed in this project'),
+            ("require('proxyquire')", 'CRITICAL: proxyquire is not installed in this project'),
+            ('require("proxyquire")', 'CRITICAL: proxyquire is not installed in this project'),
+            ("require('mock-require')", 'CRITICAL: mock-require is not installed in this project'),
+            ('require("mock-require")', 'CRITICAL: mock-require is not installed in this project'),
         ]
         
         for pattern, message in hallucinated_patterns:
             if pattern in code:
-                issues.append(f"CRITICAL: {message}")
+                issues.append(message)
                 score -= 5.0
         
-        # Ensure score doesn't go below 0
+        # =====================================================================
+        # Language-specific Pact import checks
+        # =====================================================================
+        if language in ("javascript", "typescript"):
+            if "require('@pact-foundation/pact')" not in code and "from '@pact-foundation/pact'" not in code:
+                issues.append("Missing Pact import (@pact-foundation/pact)")
+                score -= 1.0
+            
+            if "Verifier" not in code:
+                issues.append("Missing Verifier class usage")
+                score -= 2.0
+            
+            if "stateHandlers" not in code:
+                issues.append("Missing stateHandlers configuration")
+                score -= 3.0
+            
+            if "describe(" not in code:
+                issues.append("Missing describe block")
+                score -= 0.5
+            
+            if "it(" not in code and "test(" not in code:
+                issues.append("Missing test case")
+                score -= 0.5
+            
+            if "listen(" not in code:
+                issues.append("Missing server start (listen)")
+                score -= 0.5
+        
+        elif language == "go":
+            if "pact-go" not in code and "pact_go" not in code:
+                issues.append("Missing pact-go import")
+                score -= 1.0
+            
+            if "HTTPVerifier" not in code:
+                issues.append("Missing HTTPVerifier usage")
+                score -= 2.0
+            
+            if "StateHandlers" not in code:
+                issues.append("Missing StateHandlers map")
+                score -= 3.0
+        
+        elif language in ("java", "kotlin"):
+            if "@Provider" not in code:
+                issues.append("Missing @Provider annotation")
+                score -= 1.0
+            
+            if "@State" not in code:
+                issues.append("Missing @State annotated methods")
+                score -= 3.0
+        
+        elif language == "python":
+            if "Verifier" not in code:
+                issues.append("Missing Verifier import")
+                score -= 1.0
+            
+            if "state_handler" not in code:
+                issues.append("Missing state_handler registration")
+                score -= 3.0
+        
+        # =====================================================================
+        # State handler coverage check (all languages)
+        # =====================================================================
+        for state in expected_states:
+            if state not in code and state.replace("'", "\\'") not in code:
+                issues.append(f"Missing handler for state: '{state}'")
+                score -= 0.5
+        
+        # =====================================================================
+        # PACT_URL handling check (all languages)
+        # =====================================================================
+        if "PACT_URL" not in code:
+            issues.append("Missing PACT_URL environment variable handling — webhook verification will fail")
+            score -= 1.0
+        
+        # =====================================================================
+        # Pactflow URL configuration check
+        # =====================================================================
+        if language in ("javascript", "typescript"):
+            if "PACTFLOW_BASE_URL" not in code and "PACT_BROKER" not in code:
+                issues.append("Missing Pactflow URL configuration")
+                score -= 0.5
+        
         score = max(0, score)
+        
+        if issues:
+            print(f"  ⚠️  Found {len(issues)} issues:")
+            for issue in issues:
+                prefix = "  🚫" if issue.startswith("CRITICAL:") else "  ⚠️ "
+                print(f"{prefix} {issue}")
+        else:
+            print(f"  ✅ All checks passed")
         
         return score, issues
     
-    def _determine_output_path(self, repo_path: str, output_dir: Optional[str]) -> str:
-        """Determine where to write the output file."""
-        if output_dir:
-            return os.path.join(output_dir, "provider.pact.test.js")
+    def _determine_output_path(
+        self, repo_path: str, output_dir: Optional[str], language: str = "javascript"
+    ) -> str:
+        """
+        Determine where to write the output file based on provider language.
         
-        return os.path.join(
-            repo_path,
-            "tests",
-            "contract-verification",
-            "provider.pact.test.js"
-        )
+        Uses PROVIDER_LANGUAGE_CONFIG to get the correct file extension
+        and test directory for each language.
+        """
+        if output_dir:
+            lang_config = PROVIDER_LANGUAGE_CONFIG.get(language, PROVIDER_LANGUAGE_CONFIG["javascript"])
+            extension = lang_config["file_extension"]
+            return os.path.join(output_dir, f"provider{extension}")
+        
+        lang_config = PROVIDER_LANGUAGE_CONFIG.get(language, PROVIDER_LANGUAGE_CONFIG["javascript"])
+        extension = lang_config["file_extension"]
+        test_dir = lang_config["test_directory"]
+        
+        return os.path.join(repo_path, test_dir, f"provider{extension}")
     
     @observe(name="revise_provider_tests")
     def revise(
@@ -400,6 +498,7 @@ class ProviderGenerator:
         provider_name: str,
         original_code: str,
         error_message: str,
+        provider_language: str = "javascript",
         revision_feedback: str = None
     ) -> ProviderGenerationResult:
         """
@@ -409,6 +508,7 @@ class ProviderGenerator:
             provider_name: Name of the provider
             original_code: The code that failed
             error_message: Error from test execution
+            provider_language: Provider's programming language
             revision_feedback: Optional human feedback
             
         Returns:
@@ -419,7 +519,7 @@ class ProviderGenerator:
         prompt = build_provider_revision_prompt(
             original_code=original_code,
             error_message=error_message,
-            provider_language="javascript",
+            provider_language=provider_language,
             revision_feedback=revision_feedback
         )
         
@@ -436,9 +536,10 @@ class ProviderGenerator:
             
             revised_code = self._clean_generated_code(response.text)
             
-            # Re-validate
-            # Note: We don't have the original states here, so basic validation
-            score, issues = self._validate_generated_code(revised_code, [])
+            # Re-validate with language-aware checks
+            score, issues = self._validate_generated_code(
+                revised_code, [], provider_language
+            )
             
             return ProviderGenerationResult(
                 success=True,
@@ -480,7 +581,7 @@ def generate_provider_tests(
         provider_repo_path: Path to the provider repository
         output_dir: Optional output directory
         pact_url: Optional specific pact URL from Pactflow webhook
-
+        
     Returns:
         ProviderGenerationResult
     """
@@ -503,10 +604,11 @@ if __name__ == "__main__":
     result = generate_provider_tests(provider_name, repo_path, output_dir)
     
     if result.success:
-        print(f"\n✅ Generated: {result.output_path}")
-        print(f"   Quality: {result.quality_score}/10")
+        print(f"\nGenerated: {result.output_path}")
+        print(f"States: {result.provider_states}")
+        print(f"Quality: {result.quality_score}/10")
         if result.quality_issues:
-            print(f"   Issues: {result.quality_issues}")
+            print(f"Issues: {result.quality_issues}")
     else:
         print(f"\n❌ Generation failed: {result.error}")
         sys.exit(1)
