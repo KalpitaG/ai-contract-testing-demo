@@ -268,6 +268,7 @@ class ProviderGenerator:
         # Build the prompt
         prompt = build_provider_generation_prompt(
             provider_name=provider_name,
+            provider_language=provider_context.language,
             pact_context=pact_context.format_for_ai(),
             provider_context=provider_context.format_for_ai(),
             provider_states=pact_context.provider_states,
@@ -361,6 +362,21 @@ class ProviderGenerator:
             issues.append("Missing Pactflow URL configuration")
             score -= 0.5
         
+        # Check for hallucinated APIs (anti-hallucination guard)
+        hallucinated_patterns = [
+            ('.__get__(', 'Hallucinated API: .__get__() does not exist in standard Node.js'),
+            ('.__set__(', 'Hallucinated API: .__set__() does not exist in standard Node.js'),
+            ("require('rewire')", 'Hallucinated dependency: rewire is not installed'),
+            ('require("rewire")', 'Hallucinated dependency: rewire is not installed'),
+            ("require('proxyquire')", 'Hallucinated dependency: proxyquire is not installed'),
+            ('require("proxyquire")', 'Hallucinated dependency: proxyquire is not installed'),
+        ]
+        
+        for pattern, message in hallucinated_patterns:
+            if pattern in code:
+                issues.append(f"CRITICAL: {message}")
+                score -= 5.0
+        
         # Ensure score doesn't go below 0
         score = max(0, score)
         
@@ -403,6 +419,7 @@ class ProviderGenerator:
         prompt = build_provider_revision_prompt(
             original_code=original_code,
             error_message=error_message,
+            provider_language="javascript",
             revision_feedback=revision_feedback
         )
         
