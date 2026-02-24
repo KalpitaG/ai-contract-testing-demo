@@ -199,6 +199,20 @@ jobs:
           name: provider-tests
           path: tests/contract-verification/
       
+      - name: Display Generated Code
+        run: |
+          echo "=========================================="
+          echo "📄 AI-GENERATED PROVIDER TEST CODE"
+          echo "=========================================="
+          for f in tests/contract-verification/*; do
+            echo ""
+            echo "--- FILE: $f ---"
+            cat "$f"
+            echo ""
+            echo "--- END: $f ---"
+          done
+          echo "=========================================="    
+
       - name: Detect Runtime
         id: detect-runtime
         run: |
