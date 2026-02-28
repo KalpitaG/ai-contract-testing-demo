@@ -253,6 +253,7 @@ github_pr:
 openapi_detection:
   # Directories to search for specs (checked in order)
   search_paths:
+    - "oas"
     - "api/specs"
     - "api"
     - "specs"
