@@ -267,7 +267,8 @@ class ContractTestPipeline:
                 pact_library=pact_library,
                 file_naming_convention=file_naming,
                 revision_feedback=revision_feedback,  # Pass feedback for revision
-                existing_tests=existing_tests  # Pass existing tests for revision mode
+                existing_tests=existing_tests,  # Pass existing tests for revision mode
+                repo_name=repo  # Pass repo name for prompt context
             )
             result.generation_result = generation
             

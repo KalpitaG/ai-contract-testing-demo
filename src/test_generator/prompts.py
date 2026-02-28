@@ -45,9 +45,16 @@ You ONLY generate consumer-side Pact tests. You never generate provider verifica
 
 ## CRITICAL — Violations cause test failures
 
-1. **Consumer/Provider Naming**: The `consumer` and `provider` names MUST come from the Pactflow context provided in the user prompt. Look for "Registered Services" or "Existing Contracts" sections. If the Pactflow context lists services "pact-implementation" and "pact-provider-demo", use those EXACT strings. NEVER invent names like "Example App", "Example API", "MyConsumer", "MyProvider", or any placeholder. ALL test files MUST use the SAME consumer/provider pair — they merge into one pact.
+1. **Consumer/Provider Naming**: Follow this exact procedure to determine names:
+    a. **Consumer name** = the repository name from the REPOSITORY section (e.g., "pact-implementation", "email-service"). This is always the repo being tested.
+    b. **Provider name** = determined from the OpenAPI spec title or the base URL in the consumer code. Look for the API the consumer is calling. Map the API title to a service name (e.g., "PactProviderDemo API" → "pact-provider-demo"). Use lowercase-kebab-case.
+    c. **Check Pactflow**: If the "Existing Contracts" section shows a pact between THESE SAME services, use those exact names for continuity. If Pactflow shows OTHER services (like "petstore-api"), IGNORE them — they belong to a different consumer/provider relationship.
+    d. **First pact**: If no matching contract exists in Pactflow, use the names derived from steps (a) and (b).
+    e. ALL test files MUST use the SAME consumer/provider pair — they merge into one pact.
+    f. NEVER invent names like "Example App", "Example API", "petstore-consumer", "MyConsumer", or any name not derived from the actual repository and API being tested.
 
     WRONG: new PactV3({ consumer: 'Example App', provider: 'Example API' })
+    WRONG: new PactV3({ consumer: 'petstore-consumer', provider: 'petstore-api' })
     RIGHT: new PactV3({ consumer: 'pact-implementation', provider: 'pact-provider-demo' })
 
 2. **Query Parameter Types**: HTTP query parameters are ALWAYS strings. The URL transmits `?inStock=true&page=1` as strings. The Pact mock server enforces type matching and rejects mismatches. Use `string()` for ALL query values.
@@ -63,28 +70,30 @@ You ONLY generate consumer-side Pact tests. You never generate provider verifica
 
 6. **Pact File Output**: Always set `dir: path.resolve(process.cwd(), 'pacts')` so pact JSON files are written to `./pacts/`.
 
+7. **Empty Arrays**: NEVER use `eachLike()` for empty array responses. PactV3 requires at least 1 element — `eachLike(val, { min: 0 })` throws `RangeError`. Do not generate tests for empty results. Focus on success cases with data.
+
 ## REQUIRED — Violations reduce test quality
 
-7. **Use Matchers**: Use type matchers (`like()`, `string()`, `integer()`, `eachLike()`) instead of hardcoded values. Matchers make contracts flexible — they verify shape and type, not exact values.
+8. **Use Matchers**: Use type matchers (`like()`, `string()`, `integer()`, `eachLike()`) instead of hardcoded values. Matchers make contracts flexible — they verify shape and type, not exact values.
 
-8. **Provider States**: Use descriptive state names that describe preconditions.
+9. **Provider States**: Use descriptive state names that describe preconditions.
     GOOD: "items exist in the inventory", "no items exist", "item 123 exists"
     BAD: "setup", "state1", "test data"
 
-9. **Error Handling in Tests**: Only generate error/404 tests if the consumer function has explicit try/catch that returns null or a default value. If the function has no try/catch, a 404 will throw an exception — do not test for null returns in that case. Default to testing success cases only.
+10. **Error Handling in Tests**: Only generate error/404 tests if the consumer function has explicit try/catch that returns null or a default value. If the function has no try/catch, a 404 will throw an exception — do not test for null returns in that case. Default to testing success cases only.
 
-10. **Test Count Per Endpoint**: Generate at least 2 interactions per endpoint group when the API supports it:
+11. **Test Count Per Endpoint**: Generate at least 2 interactions per endpoint group when the API supports it:
     - One happy-path interaction (e.g., GET /items returns a list)
     - One alternative-path interaction (e.g., GET /items?inStock=true returns filtered list, or POST /items creates an item)
     This is NOT exhaustive scenario testing — it verifies the contract shape under the most common usage patterns. For simple endpoints with only one usage pattern (e.g., DELETE /items/:id), one interaction is sufficient.
 
 ## STYLE — Improves maintainability
 
-11. **File Organization**: Group tests by API domain (e.g., `items-api.pact.test.js`, `categories-api.pact.test.js`, `users-api.pact.test.js`). All files use the same consumer/provider names and merge into one pact.
+12. **File Organization**: Group tests by API domain (e.g., `items-api.pact.test.js`, `categories-api.pact.test.js`, `users-api.pact.test.js`). All files use the same consumer/provider names and merge into one pact.
 
-12. **Interaction Descriptions**: Use clear, unique `uponReceiving` strings that describe what the consumer expects. Format: "a request to [action]" (e.g., "a request to get all items", "a request to create an item").
+13. **Interaction Descriptions**: Use clear, unique `uponReceiving` strings that describe what the consumer expects. Format: "a request to [action]" (e.g., "a request to get all items", "a request to create an item").
 
-13. **Assertions in executeTest**: After calling the consumer function, assert the returned data to confirm the consumer correctly processes the response. At minimum, check that the result is defined and has expected structure.
+14. **Assertions in executeTest**: After calling the consumer function, assert the returned data to confirm the consumer correctly processes the response. At minimum, check that the result is defined and has expected structure.
 
 # Language Examples
 
@@ -340,6 +349,9 @@ OUTPUT_SCHEMA = {
 USER_PROMPT_TEMPLATE = """## Task
 Generate Pact consumer contract tests for the following codebase.
 
+## Repository Name
+{repo_name}
+
 ## Language
 {language}
 
@@ -351,24 +363,21 @@ Generate Pact consumer contract tests for the following codebase.
 
 ## Step-by-Step Instructions
 
-1. **Read the Pactflow section** in the context above. Extract the consumer and provider names. Use them in ALL test files. If no names are found, derive from the repository name.
+1. **Determine consumer name**: Use the repository name above: `{repo_name}`. This is your consumer name.
 
-2. **Read the consumer source code** (e.g., src/consumer.js). Identify all functions that make HTTP calls. These are the functions you will test.
+2. **Determine provider name**: Read the OpenAPI spec title and/or the base URL patterns in the consumer code. Convert to lowercase-kebab-case (e.g., "PactProviderDemo API" → "pact-provider-demo").
 
-3. **Read the OpenAPI spec** (if provided). Use it to determine:
-   - Correct request paths, methods, and parameters
-   - Expected response status codes and body shapes
-   - Query parameter names and types (remember: all query params are strings in HTTP)
+3. **Check Pactflow context**: If the context below shows an existing contract between these same services, use those exact names. If Pactflow shows OTHER service names, IGNORE them.
 
-4. **Read the PR diff** to identify new or modified functions. Prioritize these for test generation. If no PR diff is available, generate tests for all consumer functions.
+4. **Read the consumer source code** (e.g., src/consumer.js). Identify all functions that make HTTP calls.
 
-5. **Generate test files** grouped by API domain (e.g., items, categories, users). For each endpoint group:
-   - Generate at least 2 interactions when the API supports multiple usage patterns (e.g., list all + create, or list all + list filtered)
-   - Generate 1 interaction for simple endpoints with only one usage pattern (e.g., DELETE)
-   - Use matchers for all response body fields
-   - Call the actual consumer function inside executeTest
+5. **Read the OpenAPI spec** (if provided). Use it for correct paths, methods, and response shapes. Remember: all query params are strings in HTTP.
 
-6. **Verify consistency**: Every test file uses the SAME consumer and provider names. Import paths use `../../src/` (two levels up from tests/contract-tests/).
+6. **Read the PR diff** to identify new or modified functions. Prioritize these. If no diff, test all consumer functions.
+
+7. **Generate test files** grouped by API domain. For each endpoint group, generate at least 2 interactions when the API supports multiple usage patterns. Use matchers for all fields. Call actual consumer functions inside executeTest.
+
+8. **Verify consistency**: Every test file uses the SAME consumer and provider names. Import paths use `../../src/`.
 
 ## File Naming Convention
 {file_naming_convention}
@@ -418,7 +427,8 @@ def build_user_prompt(
     language: str,
     pact_config: dict,
     compressed_context: str,
-    file_naming_convention: str
+    file_naming_convention: str,
+    repo_name: str = "unknown"
 ) -> str:
     """
     Build the complete user prompt with compressed context.
@@ -428,17 +438,23 @@ def build_user_prompt(
         pact_config: Pact library configuration from detection.yaml
         compressed_context: Pre-formatted compressed context from compressor
         file_naming_convention: Expected test file naming pattern
+        repo_name: Repository name (e.g., "pact-implementation") used for consumer naming
 
     Returns:
         Complete user prompt ready to send to Gemini
     """
     pact_library_info = get_pact_library_prompt(language, pact_config)
 
+    # Extract just the repo name (not owner/repo)
+    if "/" in repo_name:
+        repo_name = repo_name.split("/")[-1]
+
     return USER_PROMPT_TEMPLATE.format(
         language=language,
         pact_library_info=pact_library_info,
         context=compressed_context,
-        file_naming_convention=file_naming_convention or "standard"
+        file_naming_convention=file_naming_convention or "standard",
+        repo_name=repo_name
     )
 
 
