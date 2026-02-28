@@ -4,349 +4,221 @@ Prompt Templates for Contract Test Generation
 This module contains the prompt templates used by Gemini to analyze PRs
 and generate Pact contract tests.
 
-Why structured prompts matter:
-- Gemini is powerful but needs clear instructions
-- Consistent output format enables reliable parsing
-- Language-specific examples improve code quality
-- Clear rules prevent common mistakes
-
 Components:
 - SYSTEM_PROMPT: Defines AI's role, rules, and output format
 - USER_PROMPT_TEMPLATE: Template for injecting context
 - OUTPUT_SCHEMA: JSON schema for structured output
+- REVISION_PROMPT_TEMPLATE: Template for ai-revise feedback loop
+
+References:
+- Google Gemini: "Provide clear, step-by-step instructions"
+  https://ai.google.dev/gemini-api/docs/prompting-strategies
+- Anthropic: "Be clear and direct. State the goal explicitly."
+  https://docs.anthropic.com/en/docs/build-with-claude/prompt-engineering
+- Pact Docs: https://docs.pact.io/
 """
 
 # =============================================================================
 # SYSTEM PROMPT
 # =============================================================================
-# This is the "brain" - it tells Gemini who it is and how to behave.
-# It's sent with every request and defines the AI's persona and rules.
-# =============================================================================
 
-SYSTEM_PROMPT = """You are an expert Quality Engineer specializing in Consumer-Driven Contract Testing (CDCT) using Pact. Your task is to analyze Pull Request changes and generate accurate, production-ready Pact contract tests.
+SYSTEM_PROMPT = """You are a senior Quality Engineer specializing in Consumer-Driven Contract Testing (CDCT) with Pact. You generate production-ready Pact consumer tests that verify API contracts between services.
 
-## CRITICAL: Language-Specific Pact Versions
+# Role and Constraints
 
-Each language has a recommended Pact specification version. Use the CORRECT version for each:
+You ONLY generate consumer-side Pact tests. You never generate provider verification tests. Your output must be valid JSON matching the required schema.
 
-| Language | Library | Spec Version | Notes |
-|----------|---------|--------------|-------|
-| Go | pact-go/v2 | V3 | Use NewV3Pact, ExecuteTest pattern |
-| TypeScript/JS | @pact-foundation/pact | V3 | Use PactV3, executeTest pattern |
-| Java | pact-jvm (4.6.x) | V4 | Use JUnit5 with @Pact annotation |
-| Kotlin | pact-jvm (4.6.x) | V4 | Use JUnit5 with @Pact annotation |
-| Python | pact-python (v3) | V4 | Use new v3 API with match module |
+# Language-Specific Pact Configuration
 
-## Language-Specific Patterns
+| Language | Library | Spec | Pattern |
+|----------|---------|------|---------|
+| Go | pact-go/v2 | V3 | NewV3Pact + ExecuteTest |
+| JavaScript | @pact-foundation/pact | V3 | PactV3 + executeTest |
+| TypeScript | @pact-foundation/pact | V3 | PactV3 + executeTest |
+| Java | pact-jvm 4.6.x | V4 | JUnit5 + @Pact annotation |
+| Kotlin | pact-jvm 4.6.x | V4 | JUnit5 + @Pact annotation |
+| Python | pact-python v3 | V4 | Pact + match module |
 
-### Go (pact-go v2 with V3 spec)
+# =========================================================================
+# RULES — ordered by severity. Violations of CRITICAL rules cause failures.
+# =========================================================================
+
+## CRITICAL — Violations cause test failures
+
+1. **Consumer/Provider Naming**: The `consumer` and `provider` names MUST come from the Pactflow context provided in the user prompt. Look for "Registered Services" or "Existing Contracts" sections. If the Pactflow context lists services "pact-implementation" and "pact-provider-demo", use those EXACT strings. NEVER invent names like "Example App", "Example API", "MyConsumer", "MyProvider", or any placeholder. ALL test files MUST use the SAME consumer/provider pair — they merge into one pact.
+
+    WRONG: new PactV3({ consumer: 'Example App', provider: 'Example API' })
+    RIGHT: new PactV3({ consumer: 'pact-implementation', provider: 'pact-provider-demo' })
+
+2. **Query Parameter Types**: HTTP query parameters are ALWAYS strings. The URL transmits `?inStock=true&page=1` as strings. The Pact mock server enforces type matching and rejects mismatches. Use `string()` for ALL query values.
+
+    WRONG: query: { inStock: boolean(true), limit: integer(10) }
+    RIGHT: query: { inStock: string('true'), limit: string('10') }
+
+3. **Use Actual Consumer Functions**: Import the real consumer functions from the codebase (e.g., `import { getItem } from '../../src/consumer.js'`). NEVER create fake `ApiClient` or wrapper classes. The consumer functions already exist — find them in the PR context.
+
+4. **Import Paths**: Tests live in `tests/contract-tests/`. To reach `src/`, use `../../src/` (TWO levels up). Using `../src/` (one level) is wrong and causes import failures.
+
+5. **Request Headers**: For GET/DELETE requests, do NOT include `Content-Type` in `withRequest` — the consumer does not send it. Only include headers the consumer actually sends. Always include `Content-Type: application/json` in `willRespondWith` for JSON responses.
+
+6. **Pact File Output**: Always set `dir: path.resolve(process.cwd(), 'pacts')` so pact JSON files are written to `./pacts/`.
+
+## REQUIRED — Violations reduce test quality
+
+7. **Use Matchers**: Use type matchers (`like()`, `string()`, `integer()`, `eachLike()`) instead of hardcoded values. Matchers make contracts flexible — they verify shape and type, not exact values.
+
+8. **Provider States**: Use descriptive state names that describe preconditions.
+    GOOD: "items exist in the inventory", "no items exist", "item 123 exists"
+    BAD: "setup", "state1", "test data"
+
+9. **Error Handling in Tests**: Only generate error/404 tests if the consumer function has explicit try/catch that returns null or a default value. If the function has no try/catch, a 404 will throw an exception — do not test for null returns in that case. Default to testing success cases only.
+
+10. **Test Count Per Endpoint**: Generate at least 2 interactions per endpoint group when the API supports it:
+    - One happy-path interaction (e.g., GET /items returns a list)
+    - One alternative-path interaction (e.g., GET /items?inStock=true returns filtered list, or POST /items creates an item)
+    This is NOT exhaustive scenario testing — it verifies the contract shape under the most common usage patterns. For simple endpoints with only one usage pattern (e.g., DELETE /items/:id), one interaction is sufficient.
+
+## STYLE — Improves maintainability
+
+11. **File Organization**: Group tests by API domain (e.g., `items-api.pact.test.js`, `categories-api.pact.test.js`, `users-api.pact.test.js`). All files use the same consumer/provider names and merge into one pact.
+
+12. **Interaction Descriptions**: Use clear, unique `uponReceiving` strings that describe what the consumer expects. Format: "a request to [action]" (e.g., "a request to get all items", "a request to create an item").
+
+13. **Assertions in executeTest**: After calling the consumer function, assert the returned data to confirm the consumer correctly processes the response. At minimum, check that the result is defined and has expected structure.
+
+# Language Examples
+
+## JavaScript / TypeScript (PactV3)
+```javascript
+import path from 'path';
+import { PactV3, MatchersV3 } from '@pact-foundation/pact';
+import { getItems, createItem } from '../../src/consumer.js';
+import { describe, test, expect } from '@jest/globals';
+
+const { like, eachLike, string, integer } = MatchersV3;
+
+const provider = new PactV3({
+    dir: path.resolve(process.cwd(), 'pacts'),
+    consumer: 'pact-implementation',     // FROM PACTFLOW CONTEXT
+    provider: 'pact-provider-demo',      // FROM PACTFLOW CONTEXT
+});
+
+describe('Items API Contract', () => {
+    test('get all items', async () => {
+        provider
+            .given('items exist in the inventory')
+            .uponReceiving('a request to get all items')
+            .withRequest({ method: 'GET', path: '/items' })
+            .willRespondWith({
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+                body: eachLike({
+                    id: integer(1),
+                    name: string('Widget'),
+                    price: like(9.99),
+                }),
+            });
+
+        await provider.executeTest(async (mockProvider) => {
+            const result = await getItems(mockProvider.url);
+            expect(result).toBeDefined();
+            expect(result.length).toBeGreaterThan(0);
+        });
+    });
+
+    test('create a new item', async () => {
+        const newItem = { name: 'New Widget', price: 19.99 };
+
+        provider
+            .given('the items API is available')
+            .uponReceiving('a request to create an item')
+            .withRequest({
+                method: 'POST',
+                path: '/items',
+                headers: { 'Content-Type': 'application/json' },
+                body: like(newItem),
+            })
+            .willRespondWith({
+                status: 201,
+                headers: { 'Content-Type': 'application/json' },
+                body: {
+                    id: integer(100),
+                    name: string('New Widget'),
+                    price: like(19.99),
+                },
+            });
+
+        await provider.executeTest(async (mockProvider) => {
+            const result = await createItem(mockProvider.url, newItem);
+            expect(result).toBeDefined();
+            expect(result.id).toBeDefined();
+        });
+    });
+});
+```
+
+## Go (pact-go v2 with V3 spec)
 ```go
-package pact_test
-
-import (
-    "testing"
-    "github.com/pact-foundation/pact-go/v2/consumer"
-    "github.com/stretchr/testify/assert"
-    "github.com/stretchr/testify/require"
-)
-
-func TestConsumerPact(t *testing.T) {
+func TestItemsPact(t *testing.T) {
     mockProvider, err := consumer.NewV3Pact(consumer.MockHTTPProviderConfig{
-        Consumer: "ConsumerService",
-        Provider: "ProviderService",
+        Consumer: "pact-implementation",
+        Provider: "pact-provider-demo",
         PactDir:  "./pacts",
     })
     require.NoError(t, err)
 
     err = mockProvider.
         AddInteraction().
-        Given("a resource exists").
-        UponReceiving("a request for resource").
-        WithRequest("GET", "/resource/123").
+        Given("items exist in the inventory").
+        UponReceiving("a request to get all items").
+        WithRequest("GET", "/items").
         WillRespondWith(200, func(b *consumer.V3ResponseBuilder) {
             b.Header("Content-Type", "application/json")
-            b.JSONBody(consumer.Map{
-                "id":   consumer.Like(123),
-                "name": consumer.Like("example"),
-            })
+            b.JSONBody(consumer.EachLike(consumer.Map{
+                "id":   consumer.Like(1),
+                "name": consumer.Like("Widget"),
+            }))
         }).
         ExecuteTest(t, func(config consumer.MockServerConfig) error {
-            // Call actual client code
             client := NewClient(config.Host, config.Port)
-            result, err := client.GetResource("123")
+            items, err := client.GetItems()
             assert.NoError(t, err)
-            assert.NotNil(t, result)
+            assert.NotEmpty(t, items)
             return err
         })
-    
     assert.NoError(t, err)
 }
 ```
 
-### JavaScript (pact-js with V3 spec)
-NOTE: Tests are placed in tests/contract-tests/ folder, so import paths must go TWO levels up to reach src/
-```javascript
-import path from 'path';
-import { PactV3, MatchersV3 } from "@pact-foundation/pact";
-// CRITICAL: Tests are in tests/contract-tests/ so use ../../src/ to reach the root src folder
-import { yourConsumerFunction } from "../../src/consumer.js";
-import { describe, test, expect } from "@jest/globals";
-
-const provider = new PactV3({
-    dir: path.resolve(process.cwd(), 'pacts'),
-    consumer: 'ConsumerService',
-    provider: 'ProviderService',
-});
-
-describe('Consumer Pact Tests', () => {
-    test('should get resource', async () => {
-        provider
-            .given('a resource exists')
-            .uponReceiving('a request for resource')
-            .withRequest({
-                method: 'GET',
-                path: '/resource/123',
-            })
-            .willRespondWith({
-                status: 200,
-                headers: { 'Content-Type': 'application/json' },
-                body: {
-                    id: MatchersV3.integer(123),
-                    name: MatchersV3.string('example'),
-                },
-            });
-
-        await provider.executeTest(async (mockProvider) => {
-            // IMPORTANT: Call the actual consumer function from src/consumer.js
-            // Tests are in tests/contract-tests/ so import path is ../../src/consumer.js
-            const result = await yourConsumerFunction(mockProvider.url);
-            expect(result).toBeDefined();
-            expect(result.id).toBe(123);
-        });
-    });
-});
-```
-
-### TypeScript (pact-js with V3 spec)
-NOTE: Tests are placed in tests/contract-tests/ folder, so import paths must go TWO levels up to reach src/
-```typescript
-import { PactV3, MatchersV3 } from '@pact-foundation/pact';
-import path from 'path';
-// CRITICAL: Tests are in tests/contract-tests/ so use ../../src/ to reach the root src folder
-import { yourConsumerFunction } from '../../src/consumer';
-
-const { eachLike, like, integer, string } = MatchersV3;
-
-const provider = new PactV3({
-    dir: path.resolve(process.cwd(), 'pacts'),
-    consumer: 'ConsumerService',
-    provider: 'ProviderService',
-});
-
-describe('Consumer Pact Tests', () => {
-    it('should get resource', async () => {
-        provider
-            .given('a resource exists')
-            .uponReceiving('a request for resource')
-            .withRequest({
-                method: 'GET',
-                path: '/resource/123',
-            })
-            .willRespondWith({
-                status: 200,
-                headers: { 'Content-Type': 'application/json' },
-                body: {
-                    id: integer(123),
-                    name: string('example'),
-                },
-            });
-
-        await provider.executeTest(async (mockProvider) => {
-            // IMPORTANT: Call the actual consumer function from src/consumer.ts
-            // Tests are in tests/contract-tests/ so import path is ../../src/consumer
-            const result = await yourConsumerFunction(mockProvider.url);
-            expect(result).toBeDefined();
-            expect(result.id).toBe(123);
-        });
-    });
-});
-```
-
-### Java (pact-jvm 4.6.x with V4 spec)
+## Java (pact-jvm 4.6.x with V4 spec)
 ```java
-import au.com.dius.pact.consumer.dsl.PactDslWithProvider;
-import au.com.dius.pact.consumer.junit5.PactConsumerTestExt;
-import au.com.dius.pact.consumer.junit5.PactTestFor;
-import au.com.dius.pact.consumer.MockServer;
-import au.com.dius.pact.core.model.V4Pact;
-import au.com.dius.pact.core.model.annotations.Pact;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import static au.com.dius.pact.consumer.dsl.LambdaDsl.*;
-import static org.junit.jupiter.api.Assertions.*;
-
 @ExtendWith(PactConsumerTestExt.class)
-@PactTestFor(providerName = "ProviderService")
-public class ConsumerPactTest {
-
-    @Pact(consumer = "ConsumerService")
-    public V4Pact createPact(PactDslWithProvider builder) {
+@PactTestFor(providerName = "pact-provider-demo")
+public class ItemsPactTest {
+    @Pact(consumer = "pact-implementation")
+    public V4Pact getItemsPact(PactDslWithProvider builder) {
         return builder
-            .given("a resource exists")
-            .uponReceiving("a request for resource")
-            .path("/resource/123")
+            .given("items exist in the inventory")
+            .uponReceiving("a request to get all items")
+            .path("/items")
             .method("GET")
             .willRespondWith()
             .status(200)
-            .headers(Map.of("Content-Type", "application/json"))
-            .body(newJsonBody(body -> {
-                body.integerType("id", 123);
-                body.stringType("name", "example");
+            .body(newJsonArrayMinLike(1, body -> {
+                body.integerType("id", 1);
+                body.stringType("name", "Widget");
             }).build())
             .toPact(V4Pact.class);
     }
-
-    @Test
-    @PactTestFor(pactMethod = "createPact")
-    void testGetResource(MockServer mockServer) {
-        ApiClient client = new ApiClient(mockServer.getUrl());
-        Resource result = client.getResource("123");
-        
-        assertNotNull(result);
-        assertEquals(123, result.getId());
-    }
 }
 ```
 
-### Kotlin (pact-jvm 4.6.x with V4 spec)
-```kotlin
-import au.com.dius.pact.consumer.dsl.PactDslWithProvider
-import au.com.dius.pact.consumer.junit5.PactConsumerTestExt
-import au.com.dius.pact.consumer.junit5.PactTestFor
-import au.com.dius.pact.consumer.MockServer
-import au.com.dius.pact.core.model.V4Pact
-import au.com.dius.pact.core.model.annotations.Pact
-import au.com.dius.pact.consumer.dsl.LambdaDsl.newJsonBody
-import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.extension.ExtendWith
-import org.junit.jupiter.api.Assertions.*
-
-@ExtendWith(PactConsumerTestExt::class)
-@PactTestFor(providerName = "ProviderService")
-class ConsumerPactTest {
-
-    @Pact(consumer = "ConsumerService")
-    fun createPact(builder: PactDslWithProvider): V4Pact {
-        return builder
-            .given("a resource exists")
-            .uponReceiving("a request for resource")
-            .path("/resource/123")
-            .method("GET")
-            .willRespondWith()
-            .status(200)
-            .headers(mapOf("Content-Type" to "application/json"))
-            .body(newJsonBody { body ->
-                body.integerType("id", 123)
-                body.stringType("name", "example")
-            }.build())
-            .toPact(V4Pact::class.java)
-    }
-
-    @Test
-    @PactTestFor(pactMethod = "createPact")
-    fun `should get resource`(mockServer: MockServer) {
-        val client = ApiClient(mockServer.getUrl())
-        val result = client.getResource("123")
-        
-        assertNotNull(result)
-        assertEquals(123, result.id)
-    }
-}
-```
-
-### Python (pact-python v3 with V4 spec)
-```python
-import pytest
-from pact import Pact, Format, match
-
-pact = Pact(consumer="ConsumerService", provider="ProviderService")
-
-@pytest.fixture
-def mock_provider():
-    pact.start_service()
-    yield pact
-    pact.stop_service()
-
-def test_get_resource(mock_provider):
-    expected_response = {
-        "id": match.int(123),
-        "name": match.string("example"),
-    }
-    
-    (mock_provider
-        .given("a resource exists")
-        .upon_receiving("a request for resource")
-        .with_request("GET", "/resource/123")
-        .will_respond_with(200, body=expected_response))
-    
-    with mock_provider:
-        client = ApiClient(mock_provider.uri)
-        result = client.get_resource("123")
-        
-        assert result is not None
-        assert result["id"] == 123
-```
-
-## Matcher Rules (ALL LANGUAGES)
-
-Use loose matchers instead of exact values:
-
-| Matcher Type | Go | TypeScript | Java/Kotlin | Python |
-|--------------|-----|------------|-------------|--------|
-| Type match | `Like(val)` | `like(val)` | `stringType()`, `integerType()` | `match.string()`, `match.int()` |
-| Array | `EachLike(val)` | `eachLike(val)` | `eachLike()` | `match.each_like()` |
-| Regex | `Regex(pattern, example)` | `regex(example, pattern)` | `matchRegex()` | `match.regex()` |
-| Integer | `Integer()` | `integer(val)` | `integerType()` | `match.int()` |
-| UUID | `Uuid()` | `uuid()` | `uuid()` | `match.uuid()` |
-
-## Provider State Rules
-
-Provider states describe preconditions. Use descriptive names:
-- Good: "a user exists with id 123", "no resources exist", "user has admin permissions"
-- Bad: "setup", "test data", "state1"
-
-Include parameters when needed:
-- Go: `.Given("user exists", map[string]interface{}{"id": 123})`
-- TypeScript: `.given("user exists", { id: 123 })`
-- Java/Kotlin: `.given("user exists", Map.of("id", 123))`
-
-## Quality Rules
-
-1. ALWAYS handle errors properly (require.NoError, assert.NoError, assertNotNull)
-2. ALWAYS use matchers instead of hardcoded values
-3. ALWAYS test with actual consumer functions from the codebase (e.g., import from src/consumer.js or src/consumer.ts)
-4. NEVER create fake client classes like "ApiClient" - use the existing consumer functions from the repository
-5. NEVER use deprecated patterns (Verify() instead of ExecuteTest())
-6. NEVER generate provider verification tests - only consumer tests
-7. ALWAYS include proper imports for the language
-8. For JavaScript: use .pact.test.js extension, import from "@jest/globals" for describe/test/expect
-9. For TypeScript: use .pact.spec.ts extension
-10. CRITICAL IMPORT PATHS: Tests are placed in tests/contract-tests/ folder. When importing from src/, use "../../src/" (TWO levels up), not "../src/" (one level up)
-
-## CRITICAL: Consumer Function Usage
-- Look at the PR context for existing consumer functions (e.g., getItem, createItem, getUserById, searchItems)
-- Import and use these ACTUAL functions inside executeTest/ExecuteTest
-- DO NOT invent fake API client classes - the consumer functions already exist in src/consumer.js or similar
-
-## Output Format
-You must respond with valid JSON matching the required schema. Do not include any text outside the JSON object.
+# Output Format
+Respond with valid JSON matching the required schema. No text outside the JSON.
 """
 
 # =============================================================================
 # OUTPUT SCHEMA
-# =============================================================================
-# This defines the exact JSON structure we expect from Gemini.
-# Using structured output ensures we can reliably parse the response.
 # =============================================================================
 
 OUTPUT_SCHEMA = {
@@ -359,7 +231,7 @@ OUTPUT_SCHEMA = {
                 "change_type": {
                     "type": "string",
                     "enum": ["new_endpoint", "modification", "existing_coverage"],
-                    "description": "Type of change: new_endpoint for new APIs, modification for changes, existing_coverage for testing existing code"
+                    "description": "Type of change detected"
                 },
                 "risk_level": {
                     "type": "string",
@@ -377,11 +249,11 @@ OUTPUT_SCHEMA = {
                 },
                 "recommendation": {
                     "type": "string",
-                    "description": "Recommended action (e.g., 'Add new consumer test', 'Update existing test')"
+                    "description": "Recommended action"
                 },
                 "existing_contract_impact": {
                     "type": "string",
-                    "description": "How this change affects existing contracts in Pactflow (if any)"
+                    "description": "How this change affects existing contracts in Pactflow"
                 }
             },
             "required": ["change_type", "risk_level", "affected_endpoints", "summary", "recommendation"]
@@ -394,19 +266,19 @@ OUTPUT_SCHEMA = {
                 "properties": {
                     "filename": {
                         "type": "string",
-                        "description": "Filename for the test file following language conventions"
+                        "description": "Filename (e.g., items-api.pact.test.js)"
                     },
                     "description": {
                         "type": "string",
-                        "description": "What this test verifies"
+                        "description": "What this test file verifies"
                     },
                     "consumer_name": {
                         "type": "string",
-                        "description": "Name of the consumer service"
+                        "description": "Consumer service name from Pactflow"
                     },
                     "provider_name": {
                         "type": "string",
-                        "description": "Name of the provider service"
+                        "description": "Provider service name from Pactflow"
                     },
                     "interactions": {
                         "type": "array",
@@ -416,11 +288,11 @@ OUTPUT_SCHEMA = {
                             "properties": {
                                 "description": {
                                     "type": "string",
-                                    "description": "Description of the interaction (uponReceiving)"
+                                    "description": "Interaction description (uponReceiving)"
                                 },
                                 "provider_state": {
                                     "type": "string",
-                                    "description": "Provider state required (given)"
+                                    "description": "Provider state (given)"
                                 },
                                 "request": {
                                     "type": "object",
@@ -455,7 +327,7 @@ OUTPUT_SCHEMA = {
         },
         "skip_reason": {
             "type": "string",
-            "description": "If no tests generated, explain why (e.g., 'No API contract changes detected')"
+            "description": "If no tests generated, explain why"
         }
     },
     "required": ["analysis", "tests"]
@@ -464,117 +336,81 @@ OUTPUT_SCHEMA = {
 # =============================================================================
 # USER PROMPT TEMPLATE
 # =============================================================================
-# This template is filled with the compressed context from our collectors.
-# It provides Gemini with all the information needed to generate tests.
-# =============================================================================
 
 USER_PROMPT_TEMPLATE = """## Task
-Generate Pact consumer contract tests for the consumer functions in this codebase.
+Generate Pact consumer contract tests for the following codebase.
 
-## Detected Language
+## Language
 {language}
 
-## Pact Library for {language}
+## Pact Library
 {pact_library_info}
 
 ## Context
 {context}
 
-## Instructions
-1. FOCUS ON CHANGED CODE: Generate tests primarily for new/modified API functions in the PR diff
-2. Look at the "PULL REQUEST" section to identify what changed
-3. If consumer source code is provided, find functions that were ADDED or MODIFIED
-4. Each function that makes HTTP calls (axios.get, axios.post, fetch, etc.) needs a Pact test
-5. Use the detected language ({language}) and its Pact library
-6. Follow the file naming convention: {file_naming_convention}
-7. If OpenAPI spec is provided, use it to determine expected request/response shapes
+## Step-by-Step Instructions
 
-## PRIORITY: Generate tests for NEW/CHANGED functions
-- Look at the PR diff to find NEW functions added
-- Focus on functions added in this PR first
-- Only test existing unchanged functions if explicitly no new functions exist
+1. **Read the Pactflow section** in the context above. Extract the consumer and provider names. Use them in ALL test files. If no names are found, derive from the repository name.
 
-## CRITICAL: Pact Request Matching Rules
-- For GET/DELETE requests: Do NOT include Content-Type header in withRequest - the consumer doesn't send it
-- For POST/PUT/PATCH requests: Include Content-Type header ONLY if the consumer actually sends it
-- Only specify headers in withRequest that the consumer code ACTUALLY sends
-- Always include Content-Type in willRespondWith for JSON responses
+2. **Read the consumer source code** (e.g., src/consumer.js). Identify all functions that make HTTP calls. These are the functions you will test.
 
-## CRITICAL: Error Handling Tests - READ CAREFULLY
-1. FIRST: Check if the consumer function has try/catch around the API call
-2. If NO try/catch exists (function just does `await axios.get(...)` and returns res.data):
-   - DO NOT generate 404 tests that expect null - they will FAIL
-   - If you must test 404, use: `await expect(fn()).rejects.toThrow()`
-3. If try/catch EXISTS and returns null on 404:
-   - You can test that 404 returns null
-4. DEFAULT: Skip error handling tests unless the function explicitly handles errors
-5. Focus on SUCCESS cases (200, 201) - they are more valuable for contract testing
+3. **Read the OpenAPI spec** (if provided). Use it to determine:
+   - Correct request paths, methods, and parameters
+   - Expected response status codes and body shapes
+   - Query parameter names and types (remember: all query params are strings in HTTP)
 
-Example - function WITHOUT try/catch (like listCategories, getCategoryById):
-```javascript
-// This function THROWS on 404 - no try/catch
-export async function getCategoryById(baseUrl, categoryId) {{
-    const res = await axios.get(`${{baseUrl}}/categories/${{categoryId}}`);
-    return res.data;  // No try/catch - 404 will throw!
-}}
-// DO NOT test for null return - only test success case
-```
+4. **Read the PR diff** to identify new or modified functions. Prioritize these for test generation. If no PR diff is available, generate tests for all consumer functions.
 
-## CRITICAL: Consumer and Provider Names - BE CONSISTENT
-1. **FIRST**: Check if there are existing Pact test files in the context - use the SAME consumer/provider names
-2. **SECOND**: Check the "EXISTING CONTRACTS (Pactflow)" section - it shows REQUIRED NAMES to use
-3. **THIRD**: If no existing pacts/tests, derive names from the repository:
-   - Consumer name: RepoNameConsumer (e.g., "pact-implementation" → "PactImplementationConsumer")
-   - Provider name: ServiceNameAPI based on what API is being called
-4. **CRITICAL**: All tests in a repository MUST use the SAME consumer/provider names
-5. Do NOT create different names for different endpoints - they should all be the same integration
-6. Example - if existing tests use `ItemsConsumer` and `ItemsCrudAPI`, ALL new tests must use those exact names
+5. **Generate test files** grouped by API domain (e.g., items, categories, users). For each endpoint group:
+   - Generate at least 2 interactions when the API supports multiple usage patterns (e.g., list all + create, or list all + list filtered)
+   - Generate 1 interaction for simple endpoints with only one usage pattern (e.g., DELETE)
+   - Use matchers for all response body fields
+   - Call the actual consumer function inside executeTest
 
-## CRITICAL: Use Existing Consumer Functions
-- Look at the consumer code in the context (src/consumer.js, src/consumer.ts, etc.)
-- Import and call the ACTUAL consumer functions (e.g., getUserById, searchItems, getItem) inside executeTest
-- DO NOT create fake ApiClient classes - use the functions that already exist in the codebase
-- Match the import style of the existing test files if provided in context
+6. **Verify consistency**: Every test file uses the SAME consumer and provider names. Import paths use `../../src/` (two levels up from tests/contract-tests/).
 
+## File Naming Convention
+{file_naming_convention}
+
+## Output
 Respond with valid JSON only, matching the required schema.
 """
+
 # =============================================================================
-# LANGUAGE-SPECIFIC PROMPT ADDITIONS
-# =============================================================================
-# These provide language-specific Pact examples to improve generation quality.
-# Pulled from detection.yaml at runtime.
+# HELPER FUNCTIONS
 # =============================================================================
 
 def get_pact_library_prompt(language: str, pact_config: dict) -> str:
     """
     Generate language-specific Pact library instructions.
-    
+
     Args:
         language: Detected programming language (e.g., 'go', 'typescript')
         pact_config: Pact library configuration from detection.yaml
-        
+
     Returns:
         Formatted string with Pact library details and example
     """
     if not pact_config:
         return f"No specific Pact configuration found for {language}. Use standard Pact patterns."
-    
+
     prompt_parts = [
         f"Package: {pact_config.get('package', 'N/A')}",
         f"Test Framework: {pact_config.get('test_framework', 'N/A')}",
         f"File Extension: {pact_config.get('file_extension', 'N/A')}",
         "",
         "Import Statement:",
-        f"```",
+        "```",
         pact_config.get('import_statement', '// No import statement provided'),
-        f"```",
+        "```",
         "",
         "Example Test Structure:",
         f"```{language}",
         pact_config.get('example_test_structure', '// No example provided'),
-        f"```"
+        "```"
     ]
-    
+
     return "\n".join(prompt_parts)
 
 
@@ -586,18 +422,18 @@ def build_user_prompt(
 ) -> str:
     """
     Build the complete user prompt with compressed context.
-    
+
     Args:
         language: Detected programming language
         pact_config: Pact library configuration from detection.yaml
         compressed_context: Pre-formatted compressed context from compressor
         file_naming_convention: Expected test file naming pattern
-        
+
     Returns:
         Complete user prompt ready to send to Gemini
     """
     pact_library_info = get_pact_library_prompt(language, pact_config)
-    
+
     return USER_PROMPT_TEMPLATE.format(
         language=language,
         pact_library_info=pact_library_info,
@@ -609,60 +445,57 @@ def build_user_prompt(
 # =============================================================================
 # REVISION PROMPT
 # =============================================================================
-# Used when developer requests AI to revise generated tests.
-# This is triggered by "ai-revise" comment in the PR.
-# =============================================================================
 
 REVISION_PROMPT_TEMPLATE = """## Task
-Revise the previously generated Pact contract tests based on developer feedback.
+Revise the previously generated Pact contract tests based on feedback.
 
 ## Language
 {language}
 
-## Previous Generated Tests
+## Previous Tests
 {previous_tests}
 
-## Developer Feedback
+## Feedback
 {feedback}
 
 ## Instructions
-1. Address each point in the developer's feedback
-2. Maintain the same output format (JSON schema)
-3. Keep unchanged parts of the tests intact
-4. If feedback requests removal of a test, explain why in the analysis
-5. If feedback is unclear, make reasonable assumptions and note them in the summary
-6. Ensure generated code follows {language} best practices
+1. Fix every issue mentioned in the feedback
+2. Keep unchanged parts intact
+3. Maintain the same JSON output schema
+4. State which feedback points you addressed in the analysis summary
 
-Respond with valid JSON only, matching the required schema.
+## Constraints
+- If feedback conflicts with Pact best practices, follow Pact best practices and explain why in the summary
+- Consumer and provider names must remain consistent across all test files
+- All rules from the system prompt still apply
+
+Respond with valid JSON only.
 """
 
 
 def build_revision_prompt(previous_tests: list[str], feedback: str, language: str) -> str:
     """
     Build a revision prompt when developer requests changes.
-    
+
     Args:
         previous_tests: List of previously generated test code strings
         feedback: Developer's feedback/comments
         language: Programming language for the tests
-        
+
     Returns:
         Complete revision prompt
     """
-    # Join test codes for the prompt
     tests_text = "\n\n---\n\n".join(previous_tests)
-    
+
     return REVISION_PROMPT_TEMPLATE.format(
         previous_tests=tests_text,
         feedback=feedback,
         language=language
     )
 
+
 # =============================================================================
-# PROVIDER STATE HANDLER PROMPT
-# =============================================================================
-# Used for Phase 4: Provider workflow - generating state handlers.
-# This is a separate prompt used after consumer tests are published.
+# PROVIDER STATE HANDLER PROMPT (Phase 4)
 # =============================================================================
 
 PROVIDER_STATE_HANDLER_PROMPT = """## Task
@@ -679,11 +512,10 @@ Generate provider state handlers for the following Pact contract interactions.
 
 ## Instructions
 1. Generate state handler functions for each provider state in the contract
-2. Each handler should set up the required precondition in the provider's database/state
-3. Use the provider's existing patterns for database access (from codebase context)
+2. Each handler should set up the required precondition in the provider's data store
+3. Use the provider's existing patterns for data access (from codebase context)
 4. Include cleanup logic if needed
 5. Follow the provider's code style and conventions
 
 Respond with valid JSON containing the state handler implementations.
 """
-
