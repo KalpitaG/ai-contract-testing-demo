@@ -115,7 +115,7 @@ class GeneratorConfig:
     """Configuration for the test generator."""
     model: str = ""  # Required: set GEMINI_MODEL in .env
     temperature: float = 0.2
-    max_output_tokens: int = 16384
+    max_output_tokens: int = 32768
     
     def __post_init__(self):
         """Load config from environment variables."""
@@ -140,7 +140,7 @@ class GeneratorConfig:
         return cls(
             model=model,
             temperature=float(os.getenv("GEMINI_TEMPERATURE", "0.2")),
-            max_output_tokens=int(os.getenv("GEMINI_MAX_TOKENS", "16384"))
+            max_output_tokens=int(os.getenv("GEMINI_MAX_TOKENS", "32768"))
         )
 
 
@@ -193,7 +193,8 @@ class ContractTestGenerator:
         pact_library: Optional["PactLibraryInfo"],
         file_naming_convention: str,
         revision_feedback: Optional[str] = None,
-        existing_tests: Optional[dict[str, str]] = None
+        existing_tests: Optional[dict[str, str]] = None,
+        repo_name: str = "unknown"
     ) -> GenerationResult:
         """
         Generate Pact contract tests from compressed context.
@@ -226,7 +227,8 @@ class ContractTestGenerator:
             language=language,
             pact_config=pact_config,
             compressed_context=compressed_context.compressed_text,
-            file_naming_convention=file_naming_convention
+            file_naming_convention=file_naming_convention,
+            repo_name=repo_name
         )
         
         # Add revision section if this is a revision request with existing tests
@@ -386,7 +388,15 @@ Generate corrected tests that address these errors.
         )
         
         print(f"[Generator] Response received")
-        
+
+        # Check if response was truncated
+        if hasattr(response, 'candidates') and response.candidates:
+            finish_reason = response.candidates[0].finish_reason
+            print(f"[Generator] Finish reason: {finish_reason}")
+            if str(finish_reason) in ('MAX_TOKENS', '2', 'FINISH_REASON_MAX_TOKENS'):
+                print("[Generator] WARNING: Response was truncated due to max_tokens limit")
+                print(f"[Generator] Current max_output_tokens: {self.config.max_output_tokens}")
+
         return response
     
     def _parse_response(
