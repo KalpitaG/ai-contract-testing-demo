@@ -110,7 +110,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: gemini-2.0-flash
+          GEMINI_MODEL: gemini-2.5-flash
           PACTFLOW_TOKEN: ${{ secrets.PACTFLOW_TOKEN }}
           PACTFLOW_BASE_URL: ${{ secrets.PACTFLOW_BASE_URL }}
           LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
