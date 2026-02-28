@@ -307,10 +307,16 @@ def _run_main(args):
         # Step 2: Copy tests to target repo
         print("\n[Runner] Writing tests to target repo...")
         test_dir.mkdir(parents=True, exist_ok=True)
-        
-        # NOTE: We only overwrite files with the same name as generated ones
-        # We do NOT delete existing tests that may be for other APIs or test types
-        # This preserves e2e, a11y, or other contract tests for different endpoints
+
+        # Clean test directory before writing new files.
+        # AI may generate different filenames between attempts (e.g.,
+        # "items.pact.test.js" in attempt 1, "items-api.pact.test.js" in attempt 2).
+        # Without cleanup, stale files accumulate and cause duplicate interactions.
+        if attempt > 1:
+            print("  Cleaning stale test files from previous attempt...")
+            for old_file in test_dir.glob("*.test.js"):
+                print(f"    Removing: {old_file.name}")
+                old_file.unlink()
         
         generated_files = []
         for test in pipeline_result.generated_tests:
@@ -353,17 +359,17 @@ def _run_main(args):
             print(f"\n[Runner] Tests failed, preparing retry...")
             
             # Build feedback for AI
-            revision_feedback = f"""
-The generated tests FAILED when executed. Fix these errors:
-
-{error_output}
-
-IMPORTANT:
-1. Fix ALL syntax errors
-2. Use correct imports for {result.language}
-3. Do NOT create fake client classes - use actual consumer functions
-4. Ensure all dependencies exist
-"""
+            revision_feedback = (
+                f"The generated tests FAILED when executed. Fix these errors:\n\n"
+                f"{error_output[:4000]}\n\n"
+                f"IMPORTANT:\n"
+                f"1. Fix ALL syntax errors\n"
+                f"2. Use correct imports for {result.language}\n"
+                f"3. Do NOT create fake client classes - use actual consumer functions\n"
+                f"4. Ensure all dependencies exist\n"
+                f"5. Query parameters must use string() matcher, never boolean() or integer()\n"
+                f"6. Consumer and provider names must match Pactflow exactly"
+            )
         else:
             print(f"\n[Runner] ❌ Tests failed after {args.max_retries + 1} attempts")
             result.error = "Tests failed validation after all retry attempts"
