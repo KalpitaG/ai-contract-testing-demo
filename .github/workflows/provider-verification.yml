@@ -372,8 +372,13 @@ jobs:
           echo "Provider: $PACT_PROVIDER"
           echo "Broker: $PACT_BROKER_BASE_URL"
 
-          # Run verification
-          if ${{ steps.detect-runtime.outputs.verify_cmd }}; then
+          # Run verification and capture full output for breaking change analysis
+          set +e
+          ${{ steps.detect-runtime.outputs.verify_cmd }} 2>&1 | tee verification-output.txt
+          VERIFY_EXIT_CODE=${PIPESTATUS[0]}
+          set -e
+
+          if [ $VERIFY_EXIT_CODE -eq 0 ]; then
             echo "passed=true" >> $GITHUB_OUTPUT
             echo "✅ Verification PASSED"
           else
@@ -381,6 +386,15 @@ jobs:
             echo "error=Verification failed - provider does not satisfy consumer contracts" >> $GITHUB_OUTPUT
             echo "❌ Verification FAILED"
           fi
+
+      - name: Upload Verification Output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-output
+          path: verification-output.txt
+          retention-days: 7
+          if-no-files-found: ignore
 
       - name: Stop Provider Server
         if: always()
@@ -391,22 +405,180 @@ jobs:
           pkill -f "flask run" || true
 
   # =====================================================================
-  # STEP 3: Report Results
+  # STEP 3: Analyze Breaking Changes (if verification failed)
+  # =====================================================================
+  analyze-breaking-changes:
+    name: Analyze Breaking Changes
+    needs: [generate-provider-tests, run-verification]
+    if: needs.run-verification.outputs.verification_passed == 'false'
+    runs-on: ubuntu-latest
+
+    outputs:
+      analysis_complete: ${{ steps.analyze.outputs.analysis_complete }}
+      is_breaking_change: ${{ steps.analyze.outputs.is_breaking_change }}
+
+    steps:
+      - name: Checkout central repo
+        uses: actions/checkout@v4
+        with:
+          repository: KalpitaG/ai-contract-testing-demo
+          token: ${{ secrets.PAT_TOKEN }}
+          path: ai-contract-testing
+
+      - name: Checkout provider repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.repository }}
+          token: ${{ secrets.PAT_TOKEN }}
+          path: provider-repo
+
+      - name: Download Verification Output
+        uses: actions/download-artifact@v4
+        with:
+          name: verification-output
+          path: .
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: ai-contract-testing/requirements.txt
+
+      - name: Install Python dependencies
+        run: pip install -r ai-contract-testing/requirements.txt
+
+      - name: Run Breaking Change Analysis
+        id: analyze
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PACTFLOW_TOKEN: ${{ secrets.PACTFLOW_TOKEN }}
+          PACTFLOW_BASE_URL: ${{ secrets.PACTFLOW_BASE_URL }}
+          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          LANGFUSE_HOST: https://cloud.langfuse.com
+        run: |
+          cd ai-contract-testing
+
+          python -c "
+          import json
+          import os
+          import sys
+
+          from src.provider.breaking_change_agent import BreakingChangeAgent
+          from src.provider.pact_fetcher import PactFetcher
+          from src.provider.provider_analyzer import ProviderAnalyzer
+
+          # Read verification output
+          output_file = '../verification-output.txt'
+          if os.path.exists(output_file):
+              with open(output_file) as f:
+                  verification_output = f.read()
+          else:
+              verification_output = 'No verification output captured'
+              print('Warning: verification-output.txt not found')
+
+          provider_name = '${{ needs.generate-provider-tests.outputs.resolved_provider_name }}'
+          pact_url = '${{ inputs.pact_url }}' or None
+
+          # Fetch pact context
+          try:
+              fetcher = PactFetcher()
+              pact_context = fetcher.fetch_provider_pacts(provider_name, pact_url=pact_url)
+          except Exception as e:
+              print(f'Could not fetch pact context: {e}')
+              pact_context = None
+
+          # Analyze provider code
+          try:
+              analyzer = ProviderAnalyzer('../provider-repo')
+              provider_context = analyzer.analyze()
+          except Exception as e:
+              print(f'Could not analyze provider: {e}')
+              provider_context = None
+
+          # Run breaking change analysis
+          if pact_context and provider_context:
+              agent = BreakingChangeAgent()
+              analysis = agent.analyze(
+                  verification_output=verification_output,
+                  pact_context=pact_context,
+                  provider_context=provider_context,
+                  provider_name=provider_name
+              )
+
+              # Format comment
+              comment = agent.format_github_comment(analysis)
+
+              # Write outputs
+              with open('../analysis-result.json', 'w') as f:
+                  json.dump({
+                      'is_breaking_change': analysis.is_breaking_change,
+                      'is_test_code_error': analysis.is_test_code_error,
+                      'summary': analysis.summary,
+                      'num_changes': len(analysis.changes),
+                      'num_fix_options': len(analysis.fix_options),
+                  }, f)
+
+              with open('../analysis-comment.md', 'w') as f:
+                  f.write(comment)
+
+              print(f'Analysis complete: breaking_change={analysis.is_breaking_change}')
+              print(f'Changes: {len(analysis.changes)}, Fix options: {len(analysis.fix_options)}')
+          else:
+              print('Skipping analysis: missing pact or provider context')
+              with open('../analysis-comment.md', 'w') as f:
+                  f.write('## Verification Failed\n\nCould not run breaking change analysis due to missing context.\nCheck the workflow logs for details.\n\n---\n*AI Contract Testing*')
+              with open('../analysis-result.json', 'w') as f:
+                  json.dump({'is_breaking_change': False, 'is_test_code_error': False, 'summary': 'Analysis skipped'}, f)
+          "
+
+          # Set outputs
+          if [ -f "../analysis-result.json" ]; then
+            echo "analysis_complete=true" >> $GITHUB_OUTPUT
+            IS_BC=$(jq -r '.is_breaking_change' ../analysis-result.json)
+            echo "is_breaking_change=$IS_BC" >> $GITHUB_OUTPUT
+          else
+            echo "analysis_complete=false" >> $GITHUB_OUTPUT
+            echo "is_breaking_change=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload Analysis Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: breaking-change-analysis
+          path: |
+            analysis-result.json
+            analysis-comment.md
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # =====================================================================
+  # STEP 4: Report Results
   # =====================================================================
   report-results:
     name: Report Results
-    needs: [generate-provider-tests, run-verification]
+    needs: [generate-provider-tests, run-verification, analyze-breaking-changes]
     if: always()
     runs-on: ubuntu-latest
 
     steps:
+      - name: Download Analysis Comment
+        if: needs.analyze-breaking-changes.outputs.analysis_complete == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: breaking-change-analysis
+          path: analysis/
+        continue-on-error: true
+
       - name: Comment - Generation Failed
         if: needs.generate-provider-tests.outputs.tests_generated != 'true' && inputs.pr_number != 0
         env:
           GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
           gh pr comment ${{ inputs.pr_number }} --repo ${{ inputs.repository }} --body \
-            "## ❌ Provider Test Generation Failed
+            "## Provider Test Generation Failed
 
             **Provider:** \`${{ needs.generate-provider-tests.outputs.resolved_provider_name }}\`
 
@@ -429,30 +601,33 @@ jobs:
           CONSUMERS='${{ needs.generate-provider-tests.outputs.consumers }}'
 
           gh pr comment ${{ inputs.pr_number }} --repo ${{ inputs.repository }} --body \
-            "## ✅ Provider Verification PASSED
+            "## Provider Verification PASSED
 
             **Provider:** \`${{ needs.generate-provider-tests.outputs.resolved_provider_name }}\`
             **Consumers:** $CONSUMERS
             **States Verified:** $STATES
 
-            All consumer contracts are satisfied! ✅
+            All consumer contracts are satisfied!
 
             Results have been published to Pactflow.
 
             ---
             *AI Contract Testing*"
 
-      - name: Comment - Verification Failed
+      - name: Comment - Verification Failed (with analysis)
         if: needs.run-verification.outputs.verification_passed == 'false' && inputs.pr_number != 0
         env:
           GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          STATES='${{ needs.generate-provider-tests.outputs.provider_states }}'
-          CONSUMERS='${{ needs.generate-provider-tests.outputs.consumers }}'
-          ERROR='${{ needs.run-verification.outputs.verification_error }}'
+          # Use the breaking change analysis comment if available
+          if [ -f "analysis/analysis-comment.md" ]; then
+            COMMENT=$(cat analysis/analysis-comment.md)
+          else
+            STATES='${{ needs.generate-provider-tests.outputs.provider_states }}'
+            CONSUMERS='${{ needs.generate-provider-tests.outputs.consumers }}'
+            ERROR='${{ needs.run-verification.outputs.verification_error }}'
 
-          gh pr comment ${{ inputs.pr_number }} --repo ${{ inputs.repository }} --body \
-            "## ❌ Provider Verification FAILED
+            COMMENT="## Provider Verification FAILED
 
             **Provider:** \`${{ needs.generate-provider-tests.outputs.resolved_provider_name }}\`
             **Consumers:** $CONSUMERS
@@ -469,6 +644,32 @@ jobs:
 
             ---
             *AI Contract Testing*"
+          fi
+
+          # Post the comment (use heredoc for multi-line markdown)
+          gh pr comment ${{ inputs.pr_number }} --repo ${{ inputs.repository }} --body "$COMMENT"
+
+      - name: Write Job Summary (webhook / no PR)
+        if: inputs.pr_number == 0
+        run: |
+          echo "## Provider Verification Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          PROVIDER='${{ needs.generate-provider-tests.outputs.resolved_provider_name }}'
+          echo "**Provider:** \`$PROVIDER\`" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ needs.run-verification.outputs.verification_passed }}" = "true" ]; then
+            echo "**Result:** Verification PASSED" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ needs.generate-provider-tests.outputs.tests_generated }}" != "true" ]; then
+            echo "**Result:** Test generation failed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**Result:** Verification FAILED" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            # Include breaking change analysis in job summary
+            if [ -f "analysis/analysis-comment.md" ]; then
+              cat analysis/analysis-comment.md >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
 
       - name: Upload Logs
         if: always()
