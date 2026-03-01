@@ -31,11 +31,13 @@ from langfuse import observe
 # Relative imports (same package)
 from .pact_fetcher import PactFetcher, PactContext
 from .provider_analyzer import ProviderAnalyzer, ProviderCodeContext
+from .state_handler_checker import StateHandlerChecker
 from .provider_prompts import (
     PROVIDER_SYSTEM_PROMPT,
     PROVIDER_LANGUAGE_CONFIG,
     build_provider_generation_prompt,
-    build_provider_revision_prompt
+    build_provider_revision_prompt,
+    build_provider_merge_prompt
 )
 
 # Import Gemini client
@@ -55,6 +57,7 @@ class ProviderGenerationResult:
     error: Optional[str] = None
     quality_score: float = 0.0
     quality_issues: list = field(default_factory=list)
+    generation_skipped: bool = False
 
 
 class ProviderGenerator:
@@ -145,7 +148,7 @@ class ProviderGenerator:
         
         print(f"  ✅ Found {len(pact_context.provider_states)} provider states")
         print(f"  ✅ Consumers: {pact_context.consumers}")
-        
+
         # Step 2: Analyze provider code
         print("\n🔍 Step 2: Analyzing provider source code...")
         try:
@@ -162,7 +165,7 @@ class ProviderGenerator:
                 storage_type="unknown",
                 error=f"Failed to analyze provider code: {e}"
             )
-        
+
         print(f"  📁 Language: {provider_context.language}")
         print(f"  🔧 Framework: {provider_context.framework}")
         print(f"  📊 Route files: {len(provider_context.route_files)}")
@@ -172,7 +175,38 @@ class ProviderGenerator:
         print(f"  ✅ Language: {provider_context.language}")
         print(f"  ✅ Framework: {provider_context.framework}")
         print(f"  ✅ Storage type: {provider_context.storage_type}")
-        
+
+        # Step 2.5: Check for existing state handlers (3.1)
+        print("\n🔎 Step 2.5: Checking for existing state handlers...")
+        checker = StateHandlerChecker()
+        existing = checker.check(
+            provider_repo_path,
+            pact_context.provider_states,
+            provider_context.language
+        )
+
+        if existing.all_states_covered:
+            print("  ✅ All states already covered — skipping AI generation")
+            output_path = self._determine_output_path(
+                provider_repo_path, output_dir, provider_context.language
+            )
+            # Copy existing file to output location if different
+            if existing.file_path != output_path:
+                os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                with open(output_path, 'w') as f:
+                    f.write(existing.raw_content)
+            return ProviderGenerationResult(
+                success=True,
+                provider_name=provider_name,
+                generated_code=existing.raw_content,
+                output_path=output_path,
+                provider_states=pact_context.provider_states,
+                consumers=pact_context.consumers,
+                storage_type=provider_context.storage_type,
+                quality_score=10.0,
+                generation_skipped=True
+            )
+
         # Step 3: Build expected responses map
         print("\n📋 Step 3: Building expected responses...")
         expected_responses = self._build_expected_responses(pact_context)
@@ -180,12 +214,25 @@ class ProviderGenerator:
         # Step 4: Generate with AI
         print("\n🤖 Step 4: Generating state handlers with AI...")
         try:
-            generated_code = self._generate_with_ai(
-                provider_name=provider_name,
-                pact_context=pact_context,
-                provider_context=provider_context,
-                expected_responses=expected_responses
-            )
+            if existing.exists and existing.missing_states:
+                # Partial coverage: merge mode — only generate missing handlers
+                print(f"  Merge mode: adding {len(existing.missing_states)} missing state(s)")
+                generated_code = self._generate_merge_with_ai(
+                    provider_name=provider_name,
+                    pact_context=pact_context,
+                    provider_context=provider_context,
+                    existing_code=existing.raw_content,
+                    missing_states=existing.missing_states,
+                    expected_responses=expected_responses
+                )
+            else:
+                # Full generation (no existing handlers)
+                generated_code = self._generate_with_ai(
+                    provider_name=provider_name,
+                    pact_context=pact_context,
+                    provider_context=provider_context,
+                    expected_responses=expected_responses
+                )
         except Exception as e:
             return ProviderGenerationResult(
                 success=False,
@@ -321,6 +368,41 @@ class ProviderGenerator:
         
         return generated_code
     
+    @observe(name="ai_merge_provider_code")
+    def _generate_merge_with_ai(
+        self,
+        provider_name: str,
+        pact_context: PactContext,
+        provider_context: ProviderCodeContext,
+        existing_code: str,
+        missing_states: list,
+        expected_responses: dict
+    ) -> str:
+        """Generate only the missing state handlers and merge into existing file."""
+
+        prompt = build_provider_merge_prompt(
+            existing_code=existing_code,
+            missing_states=missing_states,
+            expected_responses=expected_responses,
+            provider_context=provider_context.format_for_ai(),
+            pact_context=pact_context.format_for_ai(),
+            provider_language=provider_context.language
+        )
+
+        response = self.genai_client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=prompt,
+            config={
+                "system_instruction": PROVIDER_SYSTEM_PROMPT,
+                "temperature": 0.2,
+                "max_output_tokens": 12000
+            }
+        )
+
+        generated_code = self._clean_generated_code(response.text)
+
+        return generated_code
+
     def _clean_generated_code(self, code: str) -> str:
         """
         Clean up AI-generated code.

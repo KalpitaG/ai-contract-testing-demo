@@ -987,6 +987,118 @@ Pactflow will not match the result to the correct participant.
     return prompt
 
 
+# =============================================================================
+# MERGE PROMPT — For adding missing state handlers to an existing file
+# =============================================================================
+
+PROVIDER_MERGE_PROMPT = """# Add Missing State Handlers to Existing File
+
+## CRITICAL: Read ALL sections before generating code
+
+You are given an existing provider verification test file that already has some state handlers.
+Your task is to ADD handlers for the missing states listed below, while preserving ALL existing code.
+
+---
+
+## 1. Provider Language
+
+<<PROVIDER_LANGUAGE>>
+
+## 2. Existing Handler File (DO NOT modify existing handlers)
+
+```
+<<EXISTING_CODE>>
+```
+
+## 3. Missing States That Need New Handlers
+
+These states are NOT covered by the existing file. You MUST add handlers for each one:
+
+<<MISSING_STATES>>
+
+## 4. Expected Responses for Missing States
+
+The new state handlers must set up data so the provider returns EXACTLY these responses:
+
+<<EXPECTED_RESPONSES>>
+
+## 5. Provider Context (for understanding data storage)
+
+<<PROVIDER_CONTEXT>>
+
+## 6. Pact Context (consumer expectations)
+
+<<PACT_CONTEXT>>
+
+---
+
+## MERGE RULES
+
+1. **Return the COMPLETE updated file.** Not just the new handlers — the entire file with existing + new.
+2. **Do NOT remove, rename, or modify ANY existing state handlers.** They work correctly.
+3. **Add new handlers in the same style** as the existing ones (same patterns, same data access approach).
+4. **Each new handler must be self-contained** (clear + seed data for that state specifically).
+5. **State names must match EXACTLY** what's listed in Section 3 (case-sensitive, whitespace-sensitive).
+6. **Follow all the same rules** from the system prompt (PACT_URL handling, correct imports, etc.).
+7. **For JavaScript/TypeScript:** Add new entries to the existing `stateHandlers` object.
+8. **For Go:** Add new entries to the existing `StateHandlers` map.
+9. **For Java/Kotlin:** Add new `@State` annotated methods to the existing class.
+10. **For Python:** Add new state handling branches to the existing handler function.
+
+## OUTPUT
+
+Respond with the COMPLETE updated file as raw code. No JSON wrapper, no markdown fences.
+Just the complete, runnable code with both existing and new handlers.
+"""
+
+
+def build_provider_merge_prompt(
+    existing_code: str,
+    missing_states: list,
+    expected_responses: dict,
+    provider_context: str,
+    pact_context: str,
+    provider_language: str
+) -> str:
+    """
+    Build prompt for merging missing state handlers into an existing file.
+
+    Args:
+        existing_code: Content of the existing handler file
+        missing_states: List of state names that need new handlers
+        expected_responses: Map of state -> expected response data
+        provider_context: Formatted provider code context
+        pact_context: Formatted pact context
+        provider_language: Provider's programming language
+
+    Returns:
+        Complete merge prompt string for Gemini
+    """
+    states_formatted = "\n".join(f'- "{state}"' for state in missing_states)
+
+    responses_formatted = ""
+    if expected_responses:
+        for state in missing_states:
+            if state in expected_responses:
+                responses_formatted += f'\nState: "{state}"\n'
+                responses_formatted += f'Expected response: {expected_responses[state]}\n'
+
+    if not responses_formatted:
+        responses_formatted = "See pact context above for expected response bodies."
+
+    language_info = get_provider_library_prompt(provider_language)
+
+    return (
+        PROVIDER_MERGE_PROMPT
+        .replace("<<PROVIDER_LANGUAGE>>", f"{provider_language}\n\n{language_info}")
+        .replace("<<EXISTING_CODE>>", existing_code)
+        .replace("<<MISSING_STATES>>", states_formatted)
+        .replace("<<EXPECTED_RESPONSES>>", responses_formatted)
+        .replace("<<PROVIDER_CONTEXT>>", provider_context)
+        .replace("<<PACT_CONTEXT>>", pact_context)
+    )
+
+
 def build_provider_revision_prompt(
     original_code: str,
     error_message: str,

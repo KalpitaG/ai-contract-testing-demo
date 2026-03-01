@@ -65,6 +65,7 @@ jobs:
 
     outputs:
       tests_generated: ${{ steps.generate.outputs.tests_generated }}
+      generation_skipped: ${{ steps.generate.outputs.generation_skipped }}
       provider_states: ${{ steps.generate.outputs.provider_states }}
       consumers: ${{ steps.generate.outputs.consumers }}
       output_path: ${{ steps.generate.outputs.output_path }}
@@ -185,7 +186,8 @@ jobs:
                   'provider_states': result.provider_states,
                   'consumers': result.consumers,
                   'quality_score': result.quality_score,
-                  'error': result.error
+                  'error': result.error,
+                  'generation_skipped': result.generation_skipped
               }, f)
 
           if not result.success:
@@ -200,11 +202,13 @@ jobs:
           # Read results and set outputs
           if [ -f "../generation-result.json" ]; then
             echo "tests_generated=$(jq -r '.success' ../generation-result.json)" >> $GITHUB_OUTPUT
+            echo "generation_skipped=$(jq -r '.generation_skipped' ../generation-result.json)" >> $GITHUB_OUTPUT
             echo "provider_states=$(jq -c '.provider_states' ../generation-result.json)" >> $GITHUB_OUTPUT
             echo "consumers=$(jq -c '.consumers' ../generation-result.json)" >> $GITHUB_OUTPUT
             echo "output_path=$(jq -r '.output_path' ../generation-result.json)" >> $GITHUB_OUTPUT
           else
             echo "tests_generated=false" >> $GITHUB_OUTPUT
+            echo "generation_skipped=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Upload Generated Tests
@@ -679,3 +683,139 @@ jobs:
           path: |
             generation-result.json
           retention-days: 7
+
+  # =====================================================================
+  # STEP 5: Persist Handlers to Provider Repo (3.2)
+  # =====================================================================
+  persist-handlers:
+    name: Persist Handlers to Provider Repo
+    needs: [generate-provider-tests, run-verification]
+    if: |
+      always() &&
+      needs.generate-provider-tests.outputs.tests_generated == 'true' &&
+      needs.generate-provider-tests.outputs.generation_skipped != 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout provider repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.repository }}
+          token: ${{ secrets.PAT_TOKEN }}
+          path: provider-repo
+          fetch-depth: 0
+
+      - name: Download Generated Tests
+        uses: actions/download-artifact@v4
+        with:
+          name: provider-tests
+          path: provider-tests/
+
+      - name: Create Handler PR
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          cd provider-repo
+
+          PROVIDER='${{ needs.generate-provider-tests.outputs.resolved_provider_name }}'
+          PR_NUM='${{ inputs.pr_number }}'
+          VERIFICATION='${{ needs.run-verification.outputs.verification_passed }}'
+          REPO='${{ inputs.repository }}'
+          CONSUMERS='${{ needs.generate-provider-tests.outputs.consumers }}'
+          STATES='${{ needs.generate-provider-tests.outputs.provider_states }}'
+
+          # Determine branch name and target
+          if [ "$PR_NUM" != "0" ] && [ -n "$PR_NUM" ]; then
+            # PR trigger: target the feature branch
+            TARGET_BRANCH=$(gh pr view "$PR_NUM" --repo "$REPO" --json headRefName -q '.headRefName')
+            HANDLER_BRANCH="contract-handlers/pr-${PR_NUM}"
+            TRIGGER_TYPE="PR #${PR_NUM}"
+          else
+            # Webhook trigger: target main
+            TARGET_BRANCH="main"
+            SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+            HANDLER_BRANCH="contract-handlers/auto-${SHORT_SHA}"
+            TRIGGER_TYPE="webhook"
+          fi
+
+          echo "Target branch: $TARGET_BRANCH"
+          echo "Handler branch: $HANDLER_BRANCH"
+          echo "Trigger: $TRIGGER_TYPE"
+
+          # Check if handler PR already exists
+          EXISTING_PR=$(gh pr list --repo "$REPO" --head "$HANDLER_BRANCH" --json number -q '.[0].number' 2>/dev/null || echo "")
+
+          if [ -n "$EXISTING_PR" ]; then
+            echo "Handler PR #${EXISTING_PR} already exists, updating..."
+            git fetch origin "$HANDLER_BRANCH" 2>/dev/null || true
+            git checkout -B "$HANDLER_BRANCH" "origin/${HANDLER_BRANCH}" 2>/dev/null || git checkout -b "$HANDLER_BRANCH"
+          else
+            # Create new branch from target
+            git fetch origin "$TARGET_BRANCH" 2>/dev/null || true
+            git checkout -B "$HANDLER_BRANCH" "origin/${TARGET_BRANCH}" 2>/dev/null || git checkout -b "$HANDLER_BRANCH"
+          fi
+
+          # Copy generated handlers into the repo
+          mkdir -p tests/contract-verification
+          cp -r ../provider-tests/* tests/contract-verification/
+
+          # Commit
+          git add tests/contract-verification/
+          git config user.name "AI Contract Testing Bot"
+          git config user.email "ai-contract-testing@users.noreply.github.com"
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit (handlers unchanged)"
+            exit 0
+          fi
+
+          VERIFY_STATUS="PASSED"
+          if [ "$VERIFICATION" != "true" ]; then
+            VERIFY_STATUS="FAILED"
+          fi
+
+          git commit -m "AI: Add provider state handlers for ${PROVIDER}
+
+          Provider: ${PROVIDER}
+          Verification: ${VERIFY_STATUS}
+          Trigger: ${TRIGGER_TYPE}
+          Generated by AI Contract Testing"
+
+          git push origin "$HANDLER_BRANCH" --force
+
+          # Create PR if it doesn't exist
+          if [ -z "$EXISTING_PR" ]; then
+            # Count number of states
+            STATE_COUNT=$(echo "$STATES" | python3 -c "import sys,json; print(len(json.loads(sys.stdin.read())))" 2>/dev/null || echo "N/A")
+
+            PR_URL=$(gh pr create \
+              --repo "$REPO" \
+              --head "$HANDLER_BRANCH" \
+              --base "$TARGET_BRANCH" \
+              --title "AI: Provider state handlers for ${PROVIDER}" \
+              --body "$(cat <<PREOF
+          ## AI-Generated Provider State Handlers
+
+          **Provider:** \`${PROVIDER}\`
+          **Consumer(s):** ${CONSUMERS}
+          **States covered:** ${STATE_COUNT}
+          **Verification result:** ${VERIFY_STATUS}
+          **Trigger:** ${TRIGGER_TYPE}
+
+          ### What's included
+          - State handler file(s) in \`tests/contract-verification/\`
+          - All state handlers needed for consumer contract verification
+
+          ### What to do
+          1. Review the generated state handlers
+          2. Merge this PR into your branch
+          3. Future verifications will use these committed handlers (no AI regeneration needed)
+
+          ---
+          *AI Contract Testing — Handler Persistence*
+          PREOF
+          )")
+            echo "Created handler PR: $PR_URL"
+          else
+            echo "Updated existing handler PR #${EXISTING_PR}"
+          fi
