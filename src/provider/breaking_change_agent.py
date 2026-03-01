@@ -173,11 +173,19 @@ BREAKING_CHANGE_PATTERNS = [
     ),
 ]
 
-# Endpoint extraction from interaction descriptions
-ENDPOINT_PATTERN = re.compile(
-    r"(?:Interaction|Verifying).*?(GET|POST|PUT|PATCH|DELETE)\s+(/\S+)",
-    re.IGNORECASE
-)
+# Endpoint extraction patterns
+# 1. Pact-js verifier: "Sending request HTTP Request ( method: GET, path: /items/1, ...)"
+# 2. Pact interaction: "Interaction|Verifying ... GET /items/1"
+ENDPOINT_PATTERNS = [
+    re.compile(
+        r"Sending request HTTP Request \( method: (GET|POST|PUT|PATCH|DELETE), path: (/\S+?),",
+        re.IGNORECASE
+    ),
+    re.compile(
+        r"(?:Interaction|Verifying).*?(GET|POST|PUT|PATCH|DELETE)\s+(/\S+)",
+        re.IGNORECASE
+    ),
+]
 
 
 # =============================================================================
@@ -402,10 +410,22 @@ class BreakingChangeAgent:
         return self._deduplicate_changes(changes)
 
     def _extract_current_endpoint(self, output: str) -> str:
-        """Extract the affected endpoint from verification output context."""
-        match = ENDPOINT_PATTERN.search(output)
-        if match:
-            return f"{match.group(1).upper()} {match.group(2)}"
+        """Extract the affected endpoint from verification output context.
+
+        Searches for Sending request lines near the failure, falling back to
+        interaction description lines.
+        """
+        # Find the last endpoint mentioned before the failure section
+        # Pact verifier logs requests in order; the last one before "Failures:" is usually it
+        failure_pos = output.find("Failures:")
+        search_text = output[:failure_pos] if failure_pos > 0 else output
+
+        # Try each pattern, prefer the last match (closest to the failure)
+        for pattern in ENDPOINT_PATTERNS:
+            matches = list(pattern.finditer(search_text))
+            if matches:
+                m = matches[-1]  # Last match = closest to failure
+                return f"{m.group(1).upper()} {m.group(2)}"
         return ""
 
     def _deduplicate_changes(self, changes: list) -> list:
@@ -497,9 +517,25 @@ class BreakingChangeAgent:
             print(f"  Could not parse AI response as JSON")
             return []
 
+        # Handle different response shapes from Gemini
+        # Expected: {"fix_groups": [...]}
+        # Sometimes returned: [{"options": [...]}] (list at top level)
+        # Sometimes returned: [{"option_number": 1, ...}] (flat list of options)
+        if isinstance(data, list):
+            # Check if it's a list of groups or a flat list of options
+            if data and "options" in data[0]:
+                fix_groups = data
+            else:
+                fix_groups = [{"options": data}]
+        elif isinstance(data, dict):
+            fix_groups = data.get("fix_groups", [])
+        else:
+            return []
+
         options = []
-        for group in data.get("fix_groups", []):
-            for opt in group.get("options", []):
+        for group in fix_groups:
+            group_options = group.get("options", []) if isinstance(group, dict) else []
+            for opt in group_options:
                 options.append(FixOption(
                     option_number=opt.get("option_number", 0),
                     title=opt.get("title", ""),
