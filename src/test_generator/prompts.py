@@ -428,7 +428,9 @@ def build_user_prompt(
     pact_config: dict,
     compressed_context: str,
     file_naming_convention: str,
-    repo_name: str = "unknown"
+    repo_name: str = "unknown",
+    consumer_name: str = "",
+    provider_name: str = "",
 ) -> str:
     """
     Build the complete user prompt with compressed context.
@@ -439,6 +441,8 @@ def build_user_prompt(
         compressed_context: Pre-formatted compressed context from compressor
         file_naming_convention: Expected test file naming pattern
         repo_name: Repository name (e.g., "pact-implementation") used for consumer naming
+        consumer_name: Explicit Pactflow consumer name (overrides repo-name inference)
+        provider_name: Explicit Pactflow provider name (overrides OpenAPI-title inference)
 
     Returns:
         Complete user prompt ready to send to Gemini
@@ -449,13 +453,32 @@ def build_user_prompt(
     if "/" in repo_name:
         repo_name = repo_name.split("/")[-1]
 
-    return USER_PROMPT_TEMPLATE.format(
+    prompt = USER_PROMPT_TEMPLATE.format(
         language=language,
         pact_library_info=pact_library_info,
         context=compressed_context,
         file_naming_convention=file_naming_convention or "standard",
         repo_name=repo_name
     )
+
+    # Inject explicit participant names when resolved from .contract-testing.yml
+    resolved_consumer = consumer_name or repo_name
+    if resolved_consumer or provider_name:
+        names_block = "\n## CRITICAL: Pactflow Participant Names\n"
+        names_block += "These EXACT names have been resolved from the repository config. "
+        names_block += "You MUST use them verbatim. Do NOT derive names from the OpenAPI spec "
+        names_block += "title, base URL, or any other source.\n\n"
+        if resolved_consumer:
+            names_block += f"- **Consumer**: `{resolved_consumer}`\n"
+        if provider_name:
+            names_block += f"- **Provider**: `{provider_name}`\n"
+        names_block += (
+            "\nThis overrides rules 1 and 2 in the Step-by-Step Instructions below. "
+            "Use these names everywhere: PactV3 constructor, all test files, pact file name.\n"
+        )
+        prompt = prompt + names_block
+
+    return prompt
 
 
 # =============================================================================

@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.pipeline import ContractTestPipeline, PipelineResult
 from src.test_generator.generator import GeneratorConfig
+from src.core.config_reader import ContractConfigReader
 
 
 @dataclass
@@ -264,6 +265,17 @@ def _run_main(args):
                     except Exception:
                         pass
     
+    # Resolve consumer/provider names from .contract-testing.yml
+    contract_config = ContractConfigReader(
+        repo_path=str(target_path),
+        repo_name=args.repo,
+    ).resolve()
+    resolved_consumer = contract_config.pactflow_name
+    resolved_provider = ""
+    if contract_config.consumer_of:
+        resolved_provider = contract_config.consumer_of[0].get("pactflow_name", "")
+    print(f"\n[Runner] Participant names: consumer={resolved_consumer!r}, provider={resolved_provider!r} (source: {contract_config.source})")
+
     # Initialize pipeline
     config = GeneratorConfig.from_env()
     pipeline = ContractTestPipeline(generator_config=config)
@@ -287,7 +299,9 @@ def _run_main(args):
             pr_number=args.pr,
             force_language=args.language,
             revision_feedback=revision_feedback,
-            existing_tests=existing_tests if result.is_revision else None
+            existing_tests=existing_tests if result.is_revision else None,
+            consumer_name=resolved_consumer,
+            provider_name=resolved_provider,
         )
         
         result.language = pipeline_result.detected_language

@@ -194,7 +194,9 @@ class ContractTestGenerator:
         file_naming_convention: str,
         revision_feedback: Optional[str] = None,
         existing_tests: Optional[dict[str, str]] = None,
-        repo_name: str = "unknown"
+        repo_name: str = "unknown",
+        consumer_name: str = "",
+        provider_name: str = "",
     ) -> GenerationResult:
         """
         Generate Pact contract tests from compressed context.
@@ -228,7 +230,9 @@ class ContractTestGenerator:
             pact_config=pact_config,
             compressed_context=compressed_context.compressed_text,
             file_naming_convention=file_naming_convention,
-            repo_name=repo_name
+            repo_name=repo_name,
+            consumer_name=consumer_name,
+            provider_name=provider_name,
         )
         
         # Add revision section if this is a revision request with existing tests

@@ -876,7 +876,7 @@ def build_provider_generation_prompt(
 
     language_info = get_provider_library_prompt(provider_language)
 
-    return (
+    prompt = (
         PROVIDER_GENERATION_PROMPT
         .replace("<<PROVIDER_LANGUAGE>>", f"{provider_language}\n\n{language_info}")
         .replace("<<PACT_CONTEXT>>", pact_context)
@@ -885,6 +885,28 @@ def build_provider_generation_prompt(
         .replace("<<STORAGE_HINTS>>", hints_formatted)
         .replace("<<EXPECTED_RESPONSES>>", responses_formatted or "See pact context above for expected response bodies.")
     )
+
+    # Inject explicit provider name — MUST be last so it overrides any placeholder in examples
+    prompt += f"""
+
+## CRITICAL: Provider Name
+
+The provider name in ALL generated code MUST be EXACTLY: `{provider_name}`
+
+Do NOT use `'ProviderName'`, `'ProviderService'`, or any other placeholder.
+The Verifier options MUST contain: `provider: '{provider_name}'`
+
+This applies to every language:
+- JavaScript/TypeScript: `provider: '{provider_name}'`
+- Go: `Provider: "{provider_name}"`
+- Java/Kotlin: `@Provider("{provider_name}")`
+- Python: `Verifier("{provider_name}", ...)`
+
+Using any name other than `{provider_name}` will cause the verification to fail because
+Pactflow will not match the result to the correct participant.
+"""
+
+    return prompt
 
 
 def build_provider_revision_prompt(

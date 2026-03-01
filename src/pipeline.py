@@ -177,7 +177,9 @@ class ContractTestPipeline:
         pr_number: int,
         force_language: Optional[str] = None,
         revision_feedback: Optional[str] = None,
-        existing_tests: Optional[dict[str, str]] = None
+        existing_tests: Optional[dict[str, str]] = None,
+        consumer_name: str = "",
+        provider_name: str = "",
     ) -> PipelineResult:
         """
         Run the full pipeline for a Pull Request.
@@ -268,7 +270,9 @@ class ContractTestPipeline:
                 file_naming_convention=file_naming,
                 revision_feedback=revision_feedback,  # Pass feedback for revision
                 existing_tests=existing_tests,  # Pass existing tests for revision mode
-                repo_name=repo  # Pass repo name for prompt context
+                repo_name=repo,  # Pass repo name for prompt context
+                consumer_name=consumer_name,
+                provider_name=provider_name,
             )
             result.generation_result = generation
             

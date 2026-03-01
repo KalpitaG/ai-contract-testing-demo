@@ -324,15 +324,22 @@ class ProviderGenerator:
     def _clean_generated_code(self, code: str) -> str:
         """
         Clean up AI-generated code.
-        
+
         Handles two response formats:
         1. JSON with a "code" field (from structured output prompts)
         2. Raw code with optional markdown fences
+
+        Raises ValueError if JSON extraction was expected but failed — this prevents
+        raw JSON from being written as a test file (Bug 2 fix).
         """
         import json
-        
+
         code = code.strip()
-        
+
+        # Log what we received (first 200 chars) for debugging
+        preview = code[:200].replace('\n', '\\n')
+        print(f"  [Clean] Raw response preview: {preview}...")
+
         # Remove markdown code blocks for any language
         # IMPORTANT: longer prefixes first — "```json" before "```js", "```javascript" before "```java"
         for prefix in [
@@ -344,12 +351,12 @@ class ProviderGenerator:
             if code.startswith(prefix):
                 code = code[len(prefix):]
                 break
-        
+
         if code.endswith("```"):
             code = code[:-3]
-        
+
         code = code.strip()
-        
+
         # Check if Gemini returned JSON with a "code" field
         # This happens when the prompt requests structured JSON output
         if code.startswith("{"):
@@ -360,17 +367,31 @@ class ProviderGenerator:
                     if "test" in parsed and isinstance(parsed["test"], dict):
                         extracted = parsed["test"].get("code", "")
                         if extracted:
-                            print("  📦 Extracted code from JSON response (test.code)")
+                            print("  [Clean] Extracted code from JSON response (test.code)")
                             return extracted.strip()
                     # Flat structure: { "code": "..." }
                     if "code" in parsed:
                         extracted = parsed["code"]
                         if extracted:
-                            print("  📦 Extracted code from JSON response (code)")
+                            print("  [Clean] Extracted code from JSON response (code)")
                             return extracted.strip()
+                    # Extraction succeeded (JSON parsed) but code field was empty or missing
+                    raise ValueError(
+                        f"Generated code is JSON but 'code' field is missing or empty. "
+                        f"Parsed keys: {list(parsed.keys())}"
+                    )
             except json.JSONDecodeError:
                 pass  # Not valid JSON — treat as raw code
-        
+
+        # SAFETY CHECK: if code still looks like JSON, something went wrong silently
+        # (e.g. JSON was invalid but starts with { and has "code": key)
+        if code.startswith("{") and '"code"' in code:
+            raise ValueError(
+                "Generated code appears to be raw JSON but extraction failed. "
+                "The AI returned a JSON wrapper but it could not be parsed. "
+                "Check the raw AI response in the log above."
+            )
+
         return code
     
     def _validate_generated_code(

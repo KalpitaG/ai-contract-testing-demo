@@ -9,6 +9,12 @@
 #   4. Run provider verification
 #   5. Publish results to Pactflow
 #
+# provider_name resolution (AD-4):
+#   - Webhook trigger: thin caller passes `client_payload.provider_name` (authoritative)
+#   - Label/push trigger: thin caller passes empty → "Resolve Provider Name" step reads
+#     .contract-testing.yml from the checked-out provider repo
+#   - Last resort: derive from repo name
+#
 # =============================================================================
 
 name: AI Provider Verification
@@ -26,9 +32,10 @@ on:
         type: number
         default: 0
       provider_name:
-        description: 'Provider name as registered in Pactflow'
-        required: true
+        description: 'Provider name as registered in Pactflow (empty = read from .contract-testing.yml)'
+        required: false
         type: string
+        default: ''
       pact_url:
         description: 'Specific pact URL (from webhook)'
         required: false
@@ -55,13 +62,14 @@ jobs:
   generate-provider-tests:
     name: AI Generate State Handlers
     runs-on: ubuntu-latest
-    
+
     outputs:
       tests_generated: ${{ steps.generate.outputs.tests_generated }}
       provider_states: ${{ steps.generate.outputs.provider_states }}
       consumers: ${{ steps.generate.outputs.consumers }}
       output_path: ${{ steps.generate.outputs.output_path }}
-    
+      resolved_provider_name: ${{ steps.resolve-name.outputs.provider_name }}
+
     steps:
       - name: Checkout central repo
         uses: actions/checkout@v4
@@ -69,7 +77,7 @@ jobs:
           repository: KalpitaG/ai-contract-testing-demo
           token: ${{ secrets.PAT_TOKEN }}
           path: ai-contract-testing
-      
+
       - name: Checkout provider repo
         uses: actions/checkout@v4
         with:
@@ -77,18 +85,52 @@ jobs:
           token: ${{ secrets.PAT_TOKEN }}
           path: provider-repo
           fetch-depth: 0
-      
+
+      # -------------------------------------------------------------------
+      # AD-4: Resolve provider name
+      #   - If input is non-empty → use it (webhook case, Pactflow is authoritative)
+      #   - Else → read .contract-testing.yml from checked-out provider repo
+      #   - Else → fall back to repo name
+      # -------------------------------------------------------------------
+      - name: Resolve Provider Name
+        id: resolve-name
+        run: |
+          if [ -n "${{ inputs.provider_name }}" ]; then
+            echo "provider_name=${{ inputs.provider_name }}" >> $GITHUB_OUTPUT
+            echo "Source: workflow input (webhook payload)"
+          elif [ -f "provider-repo/.contract-testing.yml" ]; then
+            NAME=$(python3 -c "
+          import yaml, sys
+          with open('provider-repo/.contract-testing.yml') as f:
+              config = yaml.safe_load(f)
+          name = (config or {}).get('pactflow_name', '').strip()
+          print(name)
+            " 2>/dev/null || echo "")
+            if [ -n "$NAME" ]; then
+              echo "provider_name=$NAME" >> $GITHUB_OUTPUT
+              echo "Source: .contract-testing.yml (pactflow_name=$NAME)"
+            else
+              REPO_NAME=$(echo "${{ inputs.repository }}" | cut -d'/' -f2)
+              echo "provider_name=$REPO_NAME" >> $GITHUB_OUTPUT
+              echo "Source: repository name fallback (pactflow_name was empty in config)"
+            fi
+          else
+            REPO_NAME=$(echo "${{ inputs.repository }}" | cut -d'/' -f2)
+            echo "provider_name=$REPO_NAME" >> $GITHUB_OUTPUT
+            echo "Source: repository name fallback (no .contract-testing.yml found)"
+          fi
+
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
           cache-dependency-path: ai-contract-testing/requirements.txt
-      
+
       - name: Install Python dependencies
         run: |
           pip install -r ai-contract-testing/requirements.txt
-      
+
       - name: Post Starting Comment
         if: inputs.pr_number != 0
         env:
@@ -96,18 +138,18 @@ jobs:
         run: |
           gh pr comment ${{ inputs.pr_number }} --repo ${{ inputs.repository }} --body \
             "## 🔄 Provider Verification Starting
-            
-            **Provider:** \`${{ inputs.provider_name }}\`
-            
+
+            **Provider:** \`${{ steps.resolve-name.outputs.provider_name }}\`
+
             Steps:
             1. ⏳ Fetching pacts from Pactflow...
             2. ⏳ Analyzing provider code...
             3. ⏳ AI generating state handlers...
             4. ⏳ Running verification...
-            
+
             ---
             *AI Contract Testing*"
-      
+
       - name: Generate Provider Tests
         id: generate
         env:
@@ -119,22 +161,22 @@ jobs:
           LANGFUSE_HOST: https://cloud.langfuse.com
         run: |
           cd ai-contract-testing
-          
+
           # Run provider generator (import from src.provider)
           python -c "
           import json
           import os
           import sys
-          
+
           from src.provider.provider_generator import generate_provider_tests
-          
+
           result = generate_provider_tests(
-              provider_name='${{ inputs.provider_name }}',
+              provider_name='${{ steps.resolve-name.outputs.provider_name }}',
               provider_repo_path='../provider-repo',
               output_dir='../provider-repo/tests/contract-verification',
               pact_url='${{ inputs.pact_url }}' or None
           )
-          
+
           # Write outputs
           with open('../generation-result.json', 'w') as f:
               json.dump({
@@ -145,16 +187,16 @@ jobs:
                   'quality_score': result.quality_score,
                   'error': result.error
               }, f)
-          
+
           if not result.success:
               print(f'Generation failed: {result.error}')
               sys.exit(1)
-          
+
           print(f'Generated: {result.output_path}')
           print(f'States: {result.provider_states}')
           print(f'Quality: {result.quality_score}/10')
           "
-          
+
           # Read results and set outputs
           if [ -f "../generation-result.json" ]; then
             echo "tests_generated=$(jq -r '.success' ../generation-result.json)" >> $GITHUB_OUTPUT
@@ -164,7 +206,7 @@ jobs:
           else
             echo "tests_generated=false" >> $GITHUB_OUTPUT
           fi
-      
+
       - name: Upload Generated Tests
         if: steps.generate.outputs.tests_generated == 'true'
         uses: actions/upload-artifact@v4
@@ -181,24 +223,24 @@ jobs:
     needs: generate-provider-tests
     if: needs.generate-provider-tests.outputs.tests_generated == 'true'
     runs-on: ubuntu-latest
-    
+
     outputs:
       verification_passed: ${{ steps.verify.outputs.passed }}
       verification_error: ${{ steps.verify.outputs.error }}
-    
+
     steps:
       - name: Checkout provider repo
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.repository }}
           token: ${{ secrets.PAT_TOKEN }}
-      
+
       - name: Download Generated Tests
         uses: actions/download-artifact@v4
         with:
           name: provider-tests
           path: tests/contract-verification/
-      
+
       - name: Display Generated Code
         run: |
           echo "=========================================="
@@ -211,7 +253,32 @@ jobs:
             echo ""
             echo "--- END: $f ---"
           done
-          echo "=========================================="    
+          echo "=========================================="
+
+      - name: Read Server Config
+        id: server-config
+        run: |
+          # Read port and health path from .contract-testing.yml if present
+          if [ -f ".contract-testing.yml" ]; then
+            PORT=$(python3 -c "
+          import yaml
+          with open('.contract-testing.yml') as f:
+              cfg = yaml.safe_load(f) or {}
+          print(cfg.get('server', {}).get('port', 3001))
+            " 2>/dev/null || echo "3001")
+            HEALTH=$(python3 -c "
+          import yaml
+          with open('.contract-testing.yml') as f:
+              cfg = yaml.safe_load(f) or {}
+          print(cfg.get('server', {}).get('health_path', '/health'))
+            " 2>/dev/null || echo "/health")
+          else
+            PORT=3001
+            HEALTH=/health
+          fi
+          echo "port=$PORT" >> $GITHUB_OUTPUT
+          echo "health_path=$HEALTH" >> $GITHUB_OUTPUT
+          echo "Server config: port=$PORT, health_path=$HEALTH"
 
       - name: Detect Runtime
         id: detect-runtime
@@ -220,7 +287,8 @@ jobs:
             echo "runtime=node" >> $GITHUB_OUTPUT
             echo "install_cmd=npm ci || npm install" >> $GITHUB_OUTPUT
             echo "start_cmd=npm start" >> $GITHUB_OUTPUT
-            echo "verify_cmd=npm run test:pact" >> $GITHUB_OUTPUT
+            # Use npx jest directly — never depend on package.json scripts
+            echo "verify_cmd=npx jest tests/contract-verification/ --forceExit --no-cache" >> $GITHUB_OUTPUT
           elif [ -f "go.mod" ]; then
             echo "runtime=go" >> $GITHUB_OUTPUT
             echo "install_cmd=go mod download" >> $GITHUB_OUTPUT
@@ -235,30 +303,30 @@ jobs:
             echo "runtime=node" >> $GITHUB_OUTPUT
             echo "install_cmd=npm install" >> $GITHUB_OUTPUT
             echo "start_cmd=npm start" >> $GITHUB_OUTPUT
-            echo "verify_cmd=npm run test:pact" >> $GITHUB_OUTPUT
+            echo "verify_cmd=npx jest tests/contract-verification/ --forceExit --no-cache" >> $GITHUB_OUTPUT
           fi
-      
+
       - name: Set up Node.js
         if: steps.detect-runtime.outputs.runtime == 'node'
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-      
+
       - name: Set up Go
         if: steps.detect-runtime.outputs.runtime == 'go'
         uses: actions/setup-go@v5
         with:
           go-version: '1.21'
-      
+
       - name: Set up Python
         if: steps.detect-runtime.outputs.runtime == 'python'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      
+
       - name: Install Dependencies
         run: ${{ steps.detect-runtime.outputs.install_cmd }}
-      
+
       - name: Start Provider Server
         id: start-server
         run: |
@@ -266,24 +334,27 @@ jobs:
           ${{ steps.detect-runtime.outputs.start_cmd }} &
           SERVER_PID=$!
           echo "server_pid=$SERVER_PID" >> $GITHUB_OUTPUT
-          
+
+          PORT=${{ steps.server-config.outputs.port }}
+          HEALTH=${{ steps.server-config.outputs.health_path }}
+
           # Wait for server to be ready
-          echo "Waiting for server to start..."
+          echo "Waiting for server on http://localhost:${PORT}${HEALTH}..."
           for i in {1..30}; do
-            if curl -s http://localhost:3001/health > /dev/null 2>&1; then
+            if curl -s "http://localhost:${PORT}${HEALTH}" > /dev/null 2>&1; then
               echo "Server is ready!"
               break
             fi
             echo "Attempt $i: Server not ready, waiting..."
             sleep 2
           done
-          
+
           # Final check
-          if ! curl -s http://localhost:3001/health > /dev/null 2>&1; then
-            echo "Server failed to start"
+          if ! curl -s "http://localhost:${PORT}${HEALTH}" > /dev/null 2>&1; then
+            echo "Server failed to start on port ${PORT}"
             exit 1
           fi
-      
+
       - name: Run Verification
         id: verify
         env:
@@ -292,7 +363,7 @@ jobs:
           PACTFLOW_BASE_URL: ${{ secrets.PACTFLOW_BASE_URL }}
           PACTFLOW_TOKEN: ${{ secrets.PACTFLOW_TOKEN }}
           PACT_URL: ${{ inputs.pact_url }}
-          PACT_PROVIDER: ${{ inputs.provider_name }}
+          PACT_PROVIDER: ${{ needs.generate-provider-tests.outputs.resolved_provider_name }}
           GIT_COMMIT: ${{ github.sha }}
           GIT_BRANCH: ${{ github.head_ref || github.ref_name }}
           CI: true
@@ -300,7 +371,7 @@ jobs:
           echo "Running provider verification..."
           echo "Provider: $PACT_PROVIDER"
           echo "Broker: $PACT_BROKER_BASE_URL"
-          
+
           # Run verification
           if ${{ steps.detect-runtime.outputs.verify_cmd }}; then
             echo "passed=true" >> $GITHUB_OUTPUT
@@ -310,7 +381,7 @@ jobs:
             echo "error=Verification failed - provider does not satisfy consumer contracts" >> $GITHUB_OUTPUT
             echo "❌ Verification FAILED"
           fi
-      
+
       - name: Stop Provider Server
         if: always()
         run: |
@@ -327,7 +398,7 @@ jobs:
     needs: [generate-provider-tests, run-verification]
     if: always()
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Comment - Generation Failed
         if: needs.generate-provider-tests.outputs.tests_generated != 'true' && inputs.pr_number != 0
@@ -336,19 +407,19 @@ jobs:
         run: |
           gh pr comment ${{ inputs.pr_number }} --repo ${{ inputs.repository }} --body \
             "## ❌ Provider Test Generation Failed
-            
-            **Provider:** \`${{ inputs.provider_name }}\`
-            
+
+            **Provider:** \`${{ needs.generate-provider-tests.outputs.resolved_provider_name }}\`
+
             Could not generate state handlers. Possible reasons:
             - No pacts found in Pactflow for this provider
             - AI generation error
             - Provider code analysis failed
-            
+
             Check the workflow logs for details.
-            
+
             ---
             *AI Contract Testing*"
-      
+
       - name: Comment - Verification Passed
         if: needs.run-verification.outputs.verification_passed == 'true' && inputs.pr_number != 0
         env:
@@ -356,21 +427,21 @@ jobs:
         run: |
           STATES='${{ needs.generate-provider-tests.outputs.provider_states }}'
           CONSUMERS='${{ needs.generate-provider-tests.outputs.consumers }}'
-          
+
           gh pr comment ${{ inputs.pr_number }} --repo ${{ inputs.repository }} --body \
             "## ✅ Provider Verification PASSED
-            
-            **Provider:** \`${{ inputs.provider_name }}\`
+
+            **Provider:** \`${{ needs.generate-provider-tests.outputs.resolved_provider_name }}\`
             **Consumers:** $CONSUMERS
             **States Verified:** $STATES
-            
+
             All consumer contracts are satisfied! ✅
-            
+
             Results have been published to Pactflow.
-            
+
             ---
             *AI Contract Testing*"
-      
+
       - name: Comment - Verification Failed
         if: needs.run-verification.outputs.verification_passed == 'false' && inputs.pr_number != 0
         env:
@@ -379,26 +450,26 @@ jobs:
           STATES='${{ needs.generate-provider-tests.outputs.provider_states }}'
           CONSUMERS='${{ needs.generate-provider-tests.outputs.consumers }}'
           ERROR='${{ needs.run-verification.outputs.verification_error }}'
-          
+
           gh pr comment ${{ inputs.pr_number }} --repo ${{ inputs.repository }} --body \
             "## ❌ Provider Verification FAILED
-            
-            **Provider:** \`${{ inputs.provider_name }}\`
+
+            **Provider:** \`${{ needs.generate-provider-tests.outputs.resolved_provider_name }}\`
             **Consumers:** $CONSUMERS
             **States:** $STATES
-            
+
             **Error:** $ERROR
-            
+
             The provider does not satisfy all consumer contracts.
-            
+
             **Next steps:**
             1. Check the workflow logs for specific failures
             2. Update provider to satisfy the contracts
             3. Or negotiate contract changes with consumers
-            
+
             ---
             *AI Contract Testing*"
-      
+
       - name: Upload Logs
         if: always()
         uses: actions/upload-artifact@v4
