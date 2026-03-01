@@ -46,6 +46,7 @@ class FileExportInfo:
     exported_data: list     # Data arrays that ARE exported (accessible via require)
     non_exported_data: list # Data arrays that are NOT exported (closure-scoped, inaccessible)
     has_test_exports: bool  # Whether file has ._testData or similar test hooks
+    export_aliases: dict = field(default_factory=dict)  # data_name → export_property (e.g., 'items' → '_items')
 
 
 @dataclass 
@@ -93,17 +94,23 @@ class ProviderCodeContext:
             output.append(f"\n### {info.file_path}")
             output.append(f"  Exports: {info.exports} (type: {info.export_type})")
             output.append(f"  Data arrays in file: {info.data_arrays}")
-            
+
             if info.exported_data:
                 output.append(f"  ✅ ACCESSIBLE data (exported): {info.exported_data}")
-                output.append(f"     → You CAN use: require('{info.file_path}').{info.exported_data[0]}")
-            
+                for data_name in info.exported_data:
+                    if data_name in info.export_aliases:
+                        alias = info.export_aliases[data_name]
+                        output.append(f"     → Access '{data_name}' via: require('{info.file_path}').{alias}")
+                        output.append(f"     → This returns a REFERENCE to the same in-memory array the server uses")
+                    elif data_name in info.exports:
+                        output.append(f"     → Access '{data_name}' via: require('{info.file_path}').{data_name}")
+
             if info.non_exported_data:
                 has_non_exported_data = True
                 output.append(f"  ❌ INACCESSIBLE data (closure-scoped, NOT exported): {info.non_exported_data}")
                 output.append(f"     → require('{info.file_path}').{info.non_exported_data[0]} will be UNDEFINED")
                 output.append(f"     → You CANNOT import these arrays — they are local variables")
-            
+
             if info.has_test_exports:
                 output.append(f"  🧪 Test hooks available: check ._testData or similar exports")
         
@@ -519,16 +526,31 @@ class ProviderAnalyzer:
         
         # Clean up exports list
         exports = list(set(exports))
-        
-        # Determine which data arrays are exported
-        exported_data = [d for d in all_data if d in exports]
-        non_exported_data = [d for d in all_data if d not in exports]
-        
+
+        # Build alias map: value_name → export_property_name
+        # e.g., module.exports._items = items → { 'items': '_items' }
+        export_aliases = {}
+        if named_exports:
+            for name, value in named_exports:
+                if value in all_data and value not in exports:
+                    export_aliases[value] = name
+        if short_exports:
+            for name, value in short_exports:
+                if value in all_data and value not in exports:
+                    export_aliases[value] = name
+
+        # Determine which data arrays are exported (directly OR via alias)
+        exported_data = []
+        for d in all_data:
+            if d in exports or d in export_aliases:
+                exported_data.append(d)
+        non_exported_data = [d for d in all_data if d not in exported_data]
+
         # Check for test hooks (._testData, ._items, etc.)
         has_test_exports = bool(re.search(
             r'module\.exports\._\w+\s*=|exports\._testData', content
         ))
-        
+
         return FileExportInfo(
             file_path=file_path,
             exports=exports,
@@ -536,7 +558,8 @@ class ProviderAnalyzer:
             data_arrays=all_data,
             exported_data=exported_data,
             non_exported_data=non_exported_data,
-            has_test_exports=has_test_exports
+            has_test_exports=has_test_exports,
+            export_aliases=export_aliases
         )
     
     def _analyze_python_exports(self, file_path: str, content: str) -> FileExportInfo:
@@ -655,12 +678,15 @@ class ProviderAnalyzer:
         has_non_exported_data = any(
             info.non_exported_data for info in export_analysis
         )
-        
-        if has_exported_data and not has_non_exported_data:
+
+        if has_exported_data:
+            # At least some data stores are accessible via direct import.
+            # Non-exported arrays are likely local variables (e.g., route handler temps),
+            # not actual data stores needing state handler access.
             return "direct_import"
-        
+
         if has_non_exported_data:
-            # Data exists but isn't exported — must use REST API
+            # Data exists but none is exported — must use REST API
             return "rest_api"
         
         # Default: try REST API (safest)
@@ -679,10 +705,20 @@ class ProviderAnalyzer:
             hints.append("Data arrays are exported — state handlers can import and manipulate them directly")
             for info in export_analysis:
                 for data_name in info.exported_data:
-                    hints.append(
-                        f"Import '{data_name}' from '{info.file_path}': "
-                        f"require('{info.file_path}').{data_name}"
-                    )
+                    if data_name in info.export_aliases:
+                        alias = info.export_aliases[data_name]
+                        hints.append(
+                            f"Import '{data_name}' array via: "
+                            f"const {data_name} = require('{info.file_path}').{alias}"
+                        )
+                        hints.append(
+                            f"  This is a REFERENCE — modifying it directly changes the server's data"
+                        )
+                    else:
+                        hints.append(
+                            f"Import '{data_name}' from '{info.file_path}': "
+                            f"require('{info.file_path}').{data_name}"
+                        )
         
         elif strategy == "rest_api":
             hints.append("⚠️  Data arrays are NOT exported (closure-scoped local variables)")

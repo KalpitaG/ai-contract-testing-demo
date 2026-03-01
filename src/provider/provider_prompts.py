@@ -71,9 +71,9 @@ describe('Provider Verification', () => {
 
       stateHandlers: {
         'an item with id 1 exists': () => {
-          // Set up data so the provider returns the expected response
+          // ALWAYS: clear first, then seed with ALL fields the pact expects
           dataStore.items.length = 0;
-          dataStore.items.push({ id: 1, name: 'Item One' });
+          dataStore.items.push({ id: 1, name: 'Item One', price: 10.99, category: 'electronics', inStock: true });
         },
         'no items exist': () => {
           dataStore.items.length = 0;
@@ -359,9 +359,12 @@ def test_provider_verification():
    - This dual-mode is NON-NEGOTIABLE. Every generated test MUST support both.
 
 3. **State handlers MUST set up data matching EXACTLY what the pact expects.**
-   - If the pact expects `{ "id": 1, "name": "Item One" }`, create that exact data.
+   - If the pact expects `{ "id": 1, "name": "Item One", "price": 10.99, "category": "electronics", "inStock": true }`, create data with ALL those fields.
    - Field names, types, values, and nesting must be identical.
    - Do NOT use random/generated data in state handlers.
+   - EVERY handler must clear existing data first, then seed exact expected data.
+   - NEVER leave a state handler empty `() => {}` — it must actively set up data.
+   - NEVER rely on the provider's default initialization data — it may have been cleared by a previous handler.
 
 4. **Access data stores through the provider's EXPORTED interfaces.**
    - Read the provider source code analysis to understand how data is stored and accessed.
@@ -588,6 +591,78 @@ For EACH provider state listed in Section 4:
 2. **Determine how to set up that data** based on the storage analysis (Section 6)
 3. **Write the handler** using the correct pattern for the language
 
+### CRITICAL: State Handler Implementation Rules
+
+**Rule 1: EVERY state handler MUST be self-contained (clear + seed)**
+Each handler must independently set up ALL required data from scratch.
+Do NOT rely on data from provider initialization or from previous handlers.
+Always CLEAR existing data first, then ADD the exact data the pact expects.
+
+```javascript
+// ❌ WRONG — relies on pre-existing data from provider init
+'item 1 exists': () => {
+  // Assumes items array still has default initialization data — WILL FAIL
+}
+
+// ❌ WRONG — empty handler
+'item 1 exists': () => {}
+
+// ✅ CORRECT — clears and re-seeds with exact expected data
+'item 1 exists': () => {
+  items.length = 0;  // Always clear first
+  items.push({
+    id: 1,
+    name: 'Item One',
+    price: 10.99,
+    category: 'electronics',
+    inStock: true
+  });
+}
+```
+
+**Rule 2: Include ALL fields the pact expects in seeded data**
+Check Section 5 (Expected Responses) for each state. If the pact response body
+contains fields like id, name, price, category, inStock — the state handler MUST
+create data with ALL those fields and matching types. Missing fields cause
+"Actual map is missing the following keys" failures.
+
+**Rule 3: For "entity X exists" states — seed with the EXACT ID**
+If the state says "item 1 exists", create an item with `id: 1` (integer, not string).
+If the state says "category 1 exists", create a category with `id: 1`.
+The provider routes look up entities by ID — if the ID doesn't match, it returns 404.
+
+**Rule 4: For "entity X does not exist" states — ensure it's NOT present**
+Clear the relevant data store or ensure no entity with that ID exists.
+
+**Rule 5: For "entities exist" (plural) states — add at least one entity**
+These states are for list endpoints. Add at least one entity matching any
+filters mentioned in the state name.
+
+**Rule 6: The test MUST start its own server instance**
+NEVER rely on an externally running server. Import the provider app and call
+`app.listen()` on a TEST port (e.g., 3002, NOT the provider's default port).
+This ensures state handlers and the server share the same Node.js process,
+so in-memory data modifications are visible to incoming requests.
+
+```javascript
+const app = require('../../src/index');
+const PORT = 3002; // Different from default
+let server;
+beforeAll((done) => { server = app.listen(PORT, done); });
+afterAll((done) => { if (server) server.close(done); else done(); });
+```
+
+**Rule 7: Use the correct import paths for data arrays**
+Read the Module Export Analysis in Section 2 carefully. If it says:
+  `Access 'items' via: require('src/routes/items')._items`
+Then use: `const items = require('../../src/routes/items')._items;`
+(Adjust the relative path from tests/contract-verification/ to src/.)
+This gives a REFERENCE to the same in-memory array the server uses.
+Modifying this reference (push, splice, length=0) directly affects server responses.
+
+Do the SAME for ALL data arrays (items, categories, users, etc.) — each needs
+its own import from the correct route file.
+
 State handler data access strategies (in order of preference):
 
 **Strategy 1: Import exported data store (BEST — use when available)**
@@ -651,6 +726,9 @@ db.Exec("INSERT INTO items (id, name) VALUES (?, ?)", 1, "Item One")
 8. ❌ Not handling server startup/shutdown in test lifecycle — causes port conflicts in CI
 9. ❌ Guessing at internal module paths — only import what the provider explicitly exports
 10. ❌ Using `Pact()` or `PactV3()` constructor for provider verification — use `Verifier()` (JS/Python) or `@Provider` annotation (JVM)
+11. ❌ Empty state handlers `() => {}` — EVERY handler must actively set up or clear data
+12. ❌ Relying on provider's default initialization data — previous state handlers may have cleared it
+13. ❌ Seeding data with missing fields — if pact expects 5 fields, seed ALL 5 fields
 
 ---
 
