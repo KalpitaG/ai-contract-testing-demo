@@ -54,7 +54,7 @@ jobs:
         run: |
           echo "Recording deployment: ${{ inputs.pacticipant }} version ${{ inputs.version }} to ${{ inputs.environment }}..."
 
-          npx --yes @pact-foundation/pact-cli@latest broker record-deployment \
+          npx --yes -p @pact-foundation/pact-cli@latest pact-broker record-deployment \
             --pacticipant="${{ inputs.pacticipant }}" \
             --version="${{ inputs.version }}" \
             --environment="${{ inputs.environment }}" \

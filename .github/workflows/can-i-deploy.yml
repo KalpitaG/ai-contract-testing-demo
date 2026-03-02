@@ -65,7 +65,7 @@ jobs:
         run: |
           echo "Checking if ${{ inputs.pacticipant }} version ${{ inputs.version }} can be deployed to ${{ inputs.environment }}..."
 
-          if npx --yes @pact-foundation/pact-cli@latest broker can-i-deploy \
+          if npx --yes -p @pact-foundation/pact-cli@latest pact-broker can-i-deploy \
             --pacticipant="${{ inputs.pacticipant }}" \
             --version="${{ inputs.version }}" \
             --to-environment="${{ inputs.environment }}" \
