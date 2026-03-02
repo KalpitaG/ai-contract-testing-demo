@@ -1,0 +1,64 @@
+# =============================================================================
+# Record Deployment — Tell Pactflow What's Deployed
+# =============================================================================
+#
+# Reusable workflow that records in Pactflow that a specific version
+# has been deployed to an environment. This automatically marks the
+# previous version as undeployed.
+#
+# Usage (from target repo):
+#   record-deployment:
+#     uses: KalpitaG/ai-contract-testing-demo/.github/workflows/record-deployment.yml@main
+#     with:
+#       pacticipant: my-service
+#       version: ${{ github.sha }}
+#       environment: production
+#     secrets: inherit
+#
+# =============================================================================
+
+name: Record Deployment
+
+on:
+  workflow_call:
+    inputs:
+      pacticipant:
+        required: true
+        type: string
+        description: 'Pactflow participant name (e.g., pact-provider-demo)'
+      version:
+        required: true
+        type: string
+        description: 'Deployed version (typically github.sha)'
+      environment:
+        required: false
+        type: string
+        default: 'production'
+        description: 'Target deployment environment'
+
+jobs:
+  record-deployment:
+    name: Record Deployment
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Record deployment in Pactflow
+        env:
+          PACTFLOW_BASE_URL: ${{ secrets.PACTFLOW_BASE_URL }}
+          PACTFLOW_TOKEN: ${{ secrets.PACTFLOW_TOKEN }}
+        run: |
+          echo "Recording deployment: ${{ inputs.pacticipant }} version ${{ inputs.version }} to ${{ inputs.environment }}..."
+
+          npx --yes @pact-foundation/pact-cli@latest broker record-deployment \
+            --pacticipant="${{ inputs.pacticipant }}" \
+            --version="${{ inputs.version }}" \
+            --environment="${{ inputs.environment }}" \
+            --broker-base-url="$PACTFLOW_BASE_URL" \
+            --broker-token="$PACTFLOW_TOKEN"
+
+          echo "Deployment recorded successfully."

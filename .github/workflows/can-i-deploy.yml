@@ -1,0 +1,81 @@
+# =============================================================================
+# Can I Deploy? — Deployment Safety Gate
+# =============================================================================
+#
+# Reusable workflow that checks Pactflow's compatibility matrix to determine
+# if a version is safe to deploy to a given environment.
+#
+# Usage (from target repo):
+#   can-i-deploy:
+#     uses: KalpitaG/ai-contract-testing-demo/.github/workflows/can-i-deploy.yml@main
+#     with:
+#       pacticipant: my-service
+#       version: ${{ github.sha }}
+#       environment: production
+#     secrets: inherit
+#
+# =============================================================================
+
+name: Can I Deploy
+
+on:
+  workflow_call:
+    inputs:
+      pacticipant:
+        required: true
+        type: string
+        description: 'Pactflow participant name (e.g., pact-provider-demo)'
+      version:
+        required: true
+        type: string
+        description: 'Version to check (typically github.sha)'
+      environment:
+        required: false
+        type: string
+        default: 'production'
+        description: 'Target deployment environment'
+      retry_while_unknown:
+        required: false
+        type: number
+        default: 30
+        description: 'Seconds to poll while verification result is unknown'
+    outputs:
+      can_deploy:
+        description: 'Whether deployment is safe (true/false)'
+        value: ${{ jobs.can-i-deploy.outputs.can_deploy }}
+
+jobs:
+  can-i-deploy:
+    name: Can I Deploy?
+    runs-on: ubuntu-latest
+    outputs:
+      can_deploy: ${{ steps.check.outputs.can_deploy }}
+
+    steps:
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Check deployment safety
+        id: check
+        env:
+          PACTFLOW_BASE_URL: ${{ secrets.PACTFLOW_BASE_URL }}
+          PACTFLOW_TOKEN: ${{ secrets.PACTFLOW_TOKEN }}
+        run: |
+          echo "Checking if ${{ inputs.pacticipant }} version ${{ inputs.version }} can be deployed to ${{ inputs.environment }}..."
+
+          if npx --yes @pact-foundation/pact-cli@latest broker can-i-deploy \
+            --pacticipant="${{ inputs.pacticipant }}" \
+            --version="${{ inputs.version }}" \
+            --to-environment="${{ inputs.environment }}" \
+            --retry-while-unknown="${{ inputs.retry_while_unknown }}" \
+            --broker-base-url="$PACTFLOW_BASE_URL" \
+            --broker-token="$PACTFLOW_TOKEN"; then
+            echo "can_deploy=true" >> $GITHUB_OUTPUT
+            echo "Safe to deploy."
+          else
+            echo "can_deploy=false" >> $GITHUB_OUTPUT
+            echo "NOT safe to deploy. Check Pactflow for details."
+            exit 1
+          fi
