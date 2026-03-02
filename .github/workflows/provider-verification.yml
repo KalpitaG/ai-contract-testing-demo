@@ -54,6 +54,10 @@ on:
         required: false
       LANGFUSE_SECRET_KEY:
         required: false
+    outputs:
+      verification_passed:
+        description: 'Whether provider verification passed (true/false)'
+        value: ${{ jobs.run-verification.outputs.verification_passed }}
 
 jobs:
   # =====================================================================
