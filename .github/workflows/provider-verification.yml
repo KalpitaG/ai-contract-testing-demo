@@ -563,7 +563,7 @@ jobs:
   # =====================================================================
   report-results:
     name: Report Results
-    needs: [generate-provider-tests, run-verification, analyze-breaking-changes]
+    needs: [generate-provider-tests, run-verification, analyze-breaking-changes, persist-handlers]
     if: always()
     runs-on: ubuntu-latest
 
@@ -675,6 +675,54 @@ jobs:
             fi
           fi
 
+      - name: Comment on Handler PR
+        if: needs.persist-handlers.outputs.handler_pr_number != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          HANDLER_PR='${{ needs.persist-handlers.outputs.handler_pr_number }}'
+          REPO='${{ inputs.repository }}'
+          PROVIDER='${{ needs.generate-provider-tests.outputs.resolved_provider_name }}'
+          CONSUMERS='${{ needs.generate-provider-tests.outputs.consumers }}'
+          STATES='${{ needs.generate-provider-tests.outputs.provider_states }}'
+          VERIFICATION='${{ needs.run-verification.outputs.verification_passed }}'
+
+          if [ "$VERIFICATION" = "true" ]; then
+            gh pr comment "$HANDLER_PR" --repo "$REPO" --body "$(cat <<'EOF'
+          ## ✅ Provider Verification PASSED
+
+          **Provider:** `'"$PROVIDER"'`
+          **Consumer(s):** '"$CONSUMERS"'
+          **States Verified:** '"$STATES"'
+
+          All consumer contracts are satisfied! Review the generated handlers and merge when ready.
+
+          ---
+          *AI Contract Testing*
+          EOF
+          )"
+          elif [ -f "analysis/analysis-comment.md" ]; then
+            # Post the breaking change analysis on the handler PR
+            COMMENT=$(cat analysis/analysis-comment.md)
+            gh pr comment "$HANDLER_PR" --repo "$REPO" --body "$COMMENT"
+          else
+            gh pr comment "$HANDLER_PR" --repo "$REPO" --body "$(cat <<'EOF'
+          ## ❌ Provider Verification FAILED
+
+          **Provider:** `'"$PROVIDER"'`
+          **Consumer(s):** '"$CONSUMERS"'
+          **States:** '"$STATES"'
+
+          The provider does not satisfy all consumer contracts. Check the workflow logs for details.
+
+          You can use `ai-revise: <feedback>` to request changes to the generated handlers.
+
+          ---
+          *AI Contract Testing*
+          EOF
+          )"
+          fi
+
       - name: Upload Logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -696,6 +744,9 @@ jobs:
       needs.generate-provider-tests.outputs.generation_skipped != 'true'
     runs-on: ubuntu-latest
 
+    outputs:
+      handler_pr_number: ${{ steps.create-pr.outputs.handler_pr_number }}
+
     steps:
       - name: Checkout provider repo
         uses: actions/checkout@v4
@@ -712,6 +763,7 @@ jobs:
           path: provider-tests/
 
       - name: Create Handler PR
+        id: create-pr
         env:
           GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
@@ -816,6 +868,11 @@ jobs:
           PREOF
           )")
             echo "Created handler PR: $PR_URL"
+
+            # Extract PR number from URL (e.g., https://github.com/owner/repo/pull/123)
+            HANDLER_PR_NUM=$(echo "$PR_URL" | grep -o '[0-9]*$' || echo "")
+            echo "handler_pr_number=$HANDLER_PR_NUM" >> $GITHUB_OUTPUT
           else
             echo "Updated existing handler PR #${EXISTING_PR}"
+            echo "handler_pr_number=${EXISTING_PR}" >> $GITHUB_OUTPUT
           fi
