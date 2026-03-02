@@ -545,6 +545,10 @@ class BreakingChangeAgent:
                     impact=opt.get("impact", "")
                 ))
 
+        # Ensure sequential numbering (AI sometimes returns all zeros)
+        for i, option in enumerate(options, 1):
+            option.option_number = i
+
         return options
 
     def _fallback_fix_options(self, changes: list) -> list:

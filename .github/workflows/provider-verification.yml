@@ -289,7 +289,11 @@ jobs:
         run: |
           if [ -f "package.json" ]; then
             echo "runtime=node" >> $GITHUB_OUTPUT
-            echo "install_cmd=npm ci || npm install" >> $GITHUB_OUTPUT
+            if [ -f "package-lock.json" ]; then
+              echo "install_cmd=npm ci" >> $GITHUB_OUTPUT
+            else
+              echo "install_cmd=npm install" >> $GITHUB_OUTPUT
+            fi
             echo "start_cmd=npm start" >> $GITHUB_OUTPUT
             # Use npx jest directly — never depend on package.json scripts
             echo "verify_cmd=npx jest tests/contract-verification/ --forceExit --no-cache" >> $GITHUB_OUTPUT
