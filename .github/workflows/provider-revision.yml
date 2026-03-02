@@ -1,0 +1,548 @@
+# =============================================================================
+# AI Provider Handler Revision - Reusable Workflow
+# =============================================================================
+#
+# Called by provider repos when developer comments "ai-revise: <feedback>"
+# on a handler PR (created by the persist-handlers job).
+#
+# FLOW:
+#   1. Provider thin caller detects ai-revise comment on handler PR
+#   2. Calls this workflow with PR number and feedback
+#   3. This workflow revises handlers with AI (ProviderGenerator.revise())
+#   4. Commits revised handlers to handler branch
+#   5. Re-runs provider verification to validate
+#   6. Comments back with status
+#
+# MAX REVISIONS: 3 (enforced by counting ai-revise comments on PR)
+#
+# =============================================================================
+
+name: AI Provider Handler Revision
+
+on:
+  workflow_call:
+    inputs:
+      repository:
+        description: 'Repository in owner/repo format'
+        required: true
+        type: string
+      handler_pr_number:
+        description: 'Handler PR number where ai-revise comment was made'
+        required: true
+        type: number
+      comment_body:
+        description: 'The full comment body starting with ai-revise:'
+        required: true
+        type: string
+    secrets:
+      GEMINI_API_KEY:
+        required: true
+      PACTFLOW_TOKEN:
+        required: true
+      PACTFLOW_BASE_URL:
+        required: true
+      PAT_TOKEN:
+        required: true
+      LANGFUSE_PUBLIC_KEY:
+        required: false
+      LANGFUSE_SECRET_KEY:
+        required: false
+
+jobs:
+  # =====================================================================
+  # JOB 1: Validate the revision request
+  # =====================================================================
+  validate-and-extract:
+    name: Validate Revision Request
+    runs-on: ubuntu-latest
+
+    outputs:
+      should_revise: ${{ steps.check.outputs.should_revise }}
+      feedback: ${{ steps.check.outputs.feedback }}
+      handler_branch: ${{ steps.check.outputs.handler_branch }}
+      revision_count: ${{ steps.check.outputs.revision_count }}
+
+    steps:
+      - name: Validate and Extract Info
+        id: check
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+          COMMENT_BODY: ${{ inputs.comment_body }}
+        run: |
+          # Get Handler PR details
+          PR_DATA=$(gh pr view ${{ inputs.handler_pr_number }} --json headRefName,baseRefName,state --repo ${{ inputs.repository }})
+          HANDLER_BRANCH=$(echo $PR_DATA | jq -r '.headRefName')
+          PR_STATE=$(echo $PR_DATA | jq -r '.state')
+          echo "handler_branch=$HANDLER_BRANCH" >> $GITHUB_OUTPUT
+
+          echo "Handler PR: #${{ inputs.handler_pr_number }}"
+          echo "Handler Branch: $HANDLER_BRANCH"
+          echo "PR State: $PR_STATE"
+
+          # Verify PR is still open
+          if [ "$PR_STATE" != "OPEN" ]; then
+            echo "::error::Handler PR is not open (state: $PR_STATE)"
+            echo "should_revise=false" >> $GITHUB_OUTPUT
+            gh pr comment ${{ inputs.handler_pr_number }} --repo ${{ inputs.repository }} --body \
+              "**ai-revise** only works on open PRs. This PR is $PR_STATE.
+
+              ---
+              *AI Contract Testing*"
+            exit 0
+          fi
+
+          # Verify this is a contract-handlers branch
+          if [[ ! "$HANDLER_BRANCH" =~ ^contract-handlers/ ]]; then
+            echo "::error::Not a contract-handlers branch: $HANDLER_BRANCH"
+            echo "should_revise=false" >> $GITHUB_OUTPUT
+
+            gh pr comment ${{ inputs.handler_pr_number }} --repo ${{ inputs.repository }} --body \
+              "**ai-revise** only works on handler PRs (branch \`contract-handlers/*\`).
+
+              This PR branch (\`$HANDLER_BRANCH\`) is not a handler branch.
+
+              ---
+              *AI Contract Testing*"
+            exit 0
+          fi
+
+          # Extract feedback (everything after "ai-revise:")
+          FEEDBACK=$(echo "$COMMENT_BODY" | sed -E 's/^[Aa][Ii]-[Rr][Ee][Vv][Ii][Ss][Ee]:[[:space:]]*//')
+
+          if [ -z "$FEEDBACK" ] || [ "$FEEDBACK" = "$COMMENT_BODY" ]; then
+            echo "::error::No feedback found after ai-revise:"
+            echo "should_revise=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "feedback<<EOF" >> $GITHUB_OUTPUT
+          echo "$FEEDBACK" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          echo "Feedback: $FEEDBACK"
+
+          # Count existing ai-revise comments (case-insensitive)
+          REVISION_COUNT=$(gh pr view ${{ inputs.handler_pr_number }} --json comments --repo ${{ inputs.repository }} | \
+            jq '[.comments[].body | select(test("^[Aa][Ii]-[Rr][Ee][Vv][Ii][Ss][Ee]:"))] | length')
+          echo "revision_count=$REVISION_COUNT" >> $GITHUB_OUTPUT
+          echo "Revision count: $REVISION_COUNT"
+
+          # Check max revisions (3)
+          if [ "$REVISION_COUNT" -gt 3 ]; then
+            echo "Max revisions (3) exceeded"
+            echo "should_revise=false" >> $GITHUB_OUTPUT
+
+            gh pr comment ${{ inputs.handler_pr_number }} --repo ${{ inputs.repository }} --body \
+              "## Maximum Revisions Reached
+
+              You've used all **3 AI revisions** for this PR.
+
+              **Options:**
+              1. Edit the handlers manually
+              2. Close this PR and re-trigger verification on the feature PR
+
+              ---
+              *AI Contract Testing*"
+            exit 0
+          fi
+
+          echo "should_revise=true" >> $GITHUB_OUTPUT
+          echo "Revision request valid"
+
+  # =====================================================================
+  # JOB 2: Revise the handler code with AI
+  # =====================================================================
+  revise-handlers:
+    name: Revise Handlers
+    needs: validate-and-extract
+    if: needs.validate-and-extract.outputs.should_revise == 'true'
+    runs-on: ubuntu-latest
+
+    outputs:
+      revision_success: ${{ steps.revise.outputs.revision_success }}
+
+    steps:
+      - name: Checkout central repo
+        uses: actions/checkout@v4
+        with:
+          repository: KalpitaG/ai-contract-testing-demo
+          token: ${{ secrets.PAT_TOKEN }}
+          path: ai-contract-testing
+
+      - name: Checkout provider repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.repository }}
+          token: ${{ secrets.PAT_TOKEN }}
+          path: provider-repo
+          fetch-depth: 0
+          ref: ${{ needs.validate-and-extract.outputs.handler_branch }}
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: ai-contract-testing/requirements.txt
+
+      - name: Install Python dependencies
+        run: pip install -r ai-contract-testing/requirements.txt
+
+      - name: Post Processing Comment
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          REVISION_NUM="${{ needs.validate-and-extract.outputs.revision_count }}"
+
+          gh pr comment ${{ inputs.handler_pr_number }} --repo ${{ inputs.repository }} --body \
+            "## Processing Revision $REVISION_NUM/3
+
+            **Your feedback:**
+            > ${{ needs.validate-and-extract.outputs.feedback }}
+
+            Revising handlers... This may take a minute.
+
+            ---
+            *AI Contract Testing*"
+
+      - name: Revise Handlers with AI
+        id: revise
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PACTFLOW_TOKEN: ${{ secrets.PACTFLOW_TOKEN }}
+          PACTFLOW_BASE_URL: ${{ secrets.PACTFLOW_BASE_URL }}
+          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          LANGFUSE_HOST: https://cloud.langfuse.com
+        run: |
+          cd ai-contract-testing
+
+          python3 -c "
+          import json, os, glob, sys
+
+          from src.provider.provider_generator import ProviderGenerator
+
+          handler_dir = '../provider-repo/tests/contract-verification'
+          feedback = '''${{ needs.validate-and-extract.outputs.feedback }}'''
+
+          # Read provider name from config
+          provider_name = 'unknown'
+          try:
+              import yaml
+              config_path = '../provider-repo/.contract-testing.yml'
+              if os.path.exists(config_path):
+                  with open(config_path) as f:
+                      config = yaml.safe_load(f) or {}
+                  provider_name = config.get('pactflow_name', 'unknown')
+          except Exception as e:
+              print(f'Could not read config: {e}')
+
+          # Detect language from handler file extensions
+          provider_language = 'javascript'
+          for f in os.listdir(handler_dir):
+              if f.endswith('.go'):
+                  provider_language = 'go'
+              elif f.endswith('.py'):
+                  provider_language = 'python'
+              elif f.endswith('.kt'):
+                  provider_language = 'kotlin'
+              elif f.endswith('.java'):
+                  provider_language = 'java'
+              elif f.endswith('.ts'):
+                  provider_language = 'typescript'
+
+          print(f'Provider: {provider_name}')
+          print(f'Language: {provider_language}')
+          print(f'Feedback: {feedback[:200]}...')
+
+          generator = ProviderGenerator()
+          results = []
+
+          handler_files = glob.glob(os.path.join(handler_dir, '*'))
+          if not handler_files:
+              print('No handler files found')
+              with open('../revision-result.json', 'w') as f:
+                  json.dump({'success': False, 'error': 'No handler files found'}, f)
+              sys.exit(0)
+
+          for handler_file in handler_files:
+              filename = os.path.basename(handler_file)
+              print(f'Revising: {filename}')
+
+              with open(handler_file) as f:
+                  original_code = f.read()
+
+              result = generator.revise(
+                  provider_name=provider_name,
+                  original_code=original_code,
+                  error_message='Developer requested changes via ai-revise comment. See feedback below.',
+                  provider_language=provider_language,
+                  revision_feedback=feedback
+              )
+
+              if result.success:
+                  with open(handler_file, 'w') as f:
+                      f.write(result.generated_code)
+                  results.append({'file': filename, 'success': True, 'score': result.quality_score})
+                  print(f'  Revised successfully (score: {result.quality_score})')
+              else:
+                  results.append({'file': filename, 'success': False, 'error': result.error})
+                  print(f'  Revision failed: {result.error}')
+
+          overall_success = all(r['success'] for r in results)
+          with open('../revision-result.json', 'w') as f:
+              json.dump({'success': overall_success, 'files': results}, f)
+
+          print(f'Overall success: {overall_success}')
+          "
+
+          # Read results
+          if [ -f "../revision-result.json" ]; then
+            cat ../revision-result.json
+            SUCCESS=$(jq -r '.success' ../revision-result.json)
+            echo "revision_success=$SUCCESS" >> $GITHUB_OUTPUT
+          else
+            echo "No result file generated"
+            echo "revision_success=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit Revised Handlers
+        if: steps.revise.outputs.revision_success == 'true'
+        working-directory: provider-repo
+        run: |
+          git config user.name "AI Contract Testing Bot"
+          git config user.email "ai-contract-testing@users.noreply.github.com"
+
+          git add tests/contract-verification/
+
+          REVISION_NUM="${{ needs.validate-and-extract.outputs.revision_count }}"
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit (handlers unchanged)"
+          else
+            git commit -m "AI: Revision $REVISION_NUM — handlers updated
+
+          Developer feedback: ${{ needs.validate-and-extract.outputs.feedback }}"
+            git push origin ${{ needs.validate-and-extract.outputs.handler_branch }}
+            echo "Committed and pushed revised handlers"
+          fi
+
+  # =====================================================================
+  # JOB 3: Re-run verification with revised handlers
+  # =====================================================================
+  verify-revised-handlers:
+    name: Verify Revised Handlers
+    needs: [validate-and-extract, revise-handlers]
+    if: needs.revise-handlers.outputs.revision_success == 'true'
+    runs-on: ubuntu-latest
+
+    outputs:
+      verification_passed: ${{ steps.verify.outputs.passed }}
+
+    steps:
+      - name: Checkout provider repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.repository }}
+          token: ${{ secrets.PAT_TOKEN }}
+          ref: ${{ needs.validate-and-extract.outputs.handler_branch }}
+
+      - name: Read Server Config
+        id: server-config
+        run: |
+          if [ -f ".contract-testing.yml" ]; then
+            PORT=$(python3 -c "
+          import yaml
+          with open('.contract-testing.yml') as f:
+              cfg = yaml.safe_load(f) or {}
+          print(cfg.get('server', {}).get('port', 3001))
+            " 2>/dev/null || echo "3001")
+            HEALTH=$(python3 -c "
+          import yaml
+          with open('.contract-testing.yml') as f:
+              cfg = yaml.safe_load(f) or {}
+          print(cfg.get('server', {}).get('health_path', '/health'))
+            " 2>/dev/null || echo "/health")
+          else
+            PORT=3001
+            HEALTH=/health
+          fi
+          echo "port=$PORT" >> $GITHUB_OUTPUT
+          echo "health_path=$HEALTH" >> $GITHUB_OUTPUT
+
+      - name: Detect Runtime
+        id: detect-runtime
+        run: |
+          if [ -f "package.json" ]; then
+            echo "runtime=node" >> $GITHUB_OUTPUT
+            echo "install_cmd=npm ci || npm install" >> $GITHUB_OUTPUT
+            echo "start_cmd=npm start" >> $GITHUB_OUTPUT
+            echo "verify_cmd=npx jest tests/contract-verification/ --forceExit --no-cache" >> $GITHUB_OUTPUT
+          elif [ -f "go.mod" ]; then
+            echo "runtime=go" >> $GITHUB_OUTPUT
+            echo "install_cmd=go mod download" >> $GITHUB_OUTPUT
+            echo "start_cmd=go run . &" >> $GITHUB_OUTPUT
+            echo "verify_cmd=go test ./tests/..." >> $GITHUB_OUTPUT
+          elif [ -f "requirements.txt" ]; then
+            echo "runtime=python" >> $GITHUB_OUTPUT
+            echo "install_cmd=pip install -r requirements.txt" >> $GITHUB_OUTPUT
+            echo "start_cmd=python -m flask run &" >> $GITHUB_OUTPUT
+            echo "verify_cmd=pytest tests/contract-verification/" >> $GITHUB_OUTPUT
+          else
+            echo "runtime=node" >> $GITHUB_OUTPUT
+            echo "install_cmd=npm install" >> $GITHUB_OUTPUT
+            echo "start_cmd=npm start" >> $GITHUB_OUTPUT
+            echo "verify_cmd=npx jest tests/contract-verification/ --forceExit --no-cache" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set up Node.js
+        if: steps.detect-runtime.outputs.runtime == 'node'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Set up Go
+        if: steps.detect-runtime.outputs.runtime == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Set up Python
+        if: steps.detect-runtime.outputs.runtime == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: ${{ steps.detect-runtime.outputs.install_cmd }}
+
+      - name: Start Provider Server
+        run: |
+          ${{ steps.detect-runtime.outputs.start_cmd }} &
+
+          PORT=${{ steps.server-config.outputs.port }}
+          HEALTH=${{ steps.server-config.outputs.health_path }}
+
+          echo "Waiting for server on http://localhost:${PORT}${HEALTH}..."
+          for i in {1..30}; do
+            if curl -s "http://localhost:${PORT}${HEALTH}" > /dev/null 2>&1; then
+              echo "Server is ready!"
+              break
+            fi
+            echo "Attempt $i: Server not ready, waiting..."
+            sleep 2
+          done
+
+          if ! curl -s "http://localhost:${PORT}${HEALTH}" > /dev/null 2>&1; then
+            echo "Server failed to start on port ${PORT}"
+            exit 1
+          fi
+
+      - name: Run Verification
+        id: verify
+        env:
+          PACT_BROKER_BASE_URL: ${{ secrets.PACTFLOW_BASE_URL }}
+          PACT_BROKER_TOKEN: ${{ secrets.PACTFLOW_TOKEN }}
+          PACTFLOW_BASE_URL: ${{ secrets.PACTFLOW_BASE_URL }}
+          PACTFLOW_TOKEN: ${{ secrets.PACTFLOW_TOKEN }}
+          GIT_COMMIT: ${{ github.sha }}
+          GIT_BRANCH: ${{ needs.validate-and-extract.outputs.handler_branch }}
+          CI: true
+        run: |
+          set +e
+          ${{ steps.detect-runtime.outputs.verify_cmd }} 2>&1 | tee verification-output.txt
+          VERIFY_EXIT_CODE=${PIPESTATUS[0]}
+          set -e
+
+          if [ $VERIFY_EXIT_CODE -eq 0 ]; then
+            echo "passed=true" >> $GITHUB_OUTPUT
+            echo "Verification PASSED"
+          else
+            echo "passed=false" >> $GITHUB_OUTPUT
+            echo "Verification FAILED"
+          fi
+
+      - name: Stop Provider Server
+        if: always()
+        run: |
+          pkill -f "node src/index" || true
+          pkill -f "npm start" || true
+          pkill -f "go run" || true
+          pkill -f "flask run" || true
+
+  # =====================================================================
+  # JOB 4: Report results
+  # =====================================================================
+  report-results:
+    name: Report Revision Results
+    needs: [validate-and-extract, revise-handlers, verify-revised-handlers]
+    if: always() && needs.validate-and-extract.outputs.should_revise == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Comment - Revision Succeeded + Verification Passed
+        if: |
+          needs.revise-handlers.outputs.revision_success == 'true' &&
+          needs.verify-revised-handlers.outputs.verification_passed == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          REVISION_NUM="${{ needs.validate-and-extract.outputs.revision_count }}"
+          REMAINING=$((3 - REVISION_NUM))
+
+          gh pr comment ${{ inputs.handler_pr_number }} --repo ${{ inputs.repository }} --body \
+            "## Revision $REVISION_NUM Complete — Handlers Verified!
+
+            I've revised the state handlers based on your feedback and verification **passed**.
+
+            **Your feedback was:**
+            > ${{ needs.validate-and-extract.outputs.feedback }}
+
+            Please review the updated code.
+
+            If you need more changes, comment \`ai-revise: <feedback>\` ($REMAINING revisions remaining).
+            If satisfied, **merge this PR** into your branch!
+
+            ---
+            *AI Contract Testing*"
+
+      - name: Comment - Revision Succeeded + Verification Failed
+        if: |
+          needs.revise-handlers.outputs.revision_success == 'true' &&
+          needs.verify-revised-handlers.outputs.verification_passed != 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          REVISION_NUM="${{ needs.validate-and-extract.outputs.revision_count }}"
+          REMAINING=$((3 - REVISION_NUM))
+
+          gh pr comment ${{ inputs.handler_pr_number }} --repo ${{ inputs.repository }} --body \
+            "## Revision $REVISION_NUM Complete — Verification Failed
+
+            I've revised the state handlers but verification **failed**.
+
+            **Your feedback was:**
+            > ${{ needs.validate-and-extract.outputs.feedback }}
+
+            The handlers have been committed for your review. You may need to:
+            1. Fix issues manually
+            2. Comment \`ai-revise: <more specific feedback>\` ($REMAINING revisions remaining)
+
+            ---
+            *AI Contract Testing*"
+
+      - name: Comment - Revision Failed
+        if: needs.revise-handlers.outputs.revision_success != 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          gh pr comment ${{ inputs.handler_pr_number }} --repo ${{ inputs.repository }} --body \
+            "## Revision Failed
+
+            I couldn't revise the handlers. This might be due to:
+            - API rate limits
+            - AI generation errors
+
+            Please check the workflow logs or try again later.
+
+            ---
+            *AI Contract Testing*"
