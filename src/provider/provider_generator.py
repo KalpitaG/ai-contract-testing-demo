@@ -439,27 +439,33 @@ class ProviderGenerator:
 
         code = code.strip()
 
-        # Check if Gemini returned JSON with a "code" field
-        # This happens when the prompt requests structured JSON output
+        # Check if Gemini returned JSON with a code field
+        # Gemini may use various keys: "code", "test.code", "response", "output", etc.
         if code.startswith("{"):
             try:
                 parsed = json.loads(code)
-                # Extract code from nested structure: { "test": { "code": "..." } }
                 if isinstance(parsed, dict):
+                    # Try nested structure: { "test": { "code": "..." } }
                     if "test" in parsed and isinstance(parsed["test"], dict):
                         extracted = parsed["test"].get("code", "")
                         if extracted:
                             print("  [Clean] Extracted code from JSON response (test.code)")
-                            return extracted.strip()
-                    # Flat structure: { "code": "..." }
-                    if "code" in parsed:
-                        extracted = parsed["code"]
-                        if extracted:
-                            print("  [Clean] Extracted code from JSON response (code)")
-                            return extracted.strip()
-                    # Extraction succeeded (JSON parsed) but code field was empty or missing
+                            return self._strip_inner_fences(extracted).strip()
+                    # Try known keys in priority order
+                    for key in ("code", "response", "output", "generated_code"):
+                        if key in parsed and isinstance(parsed[key], str) and parsed[key].strip():
+                            print(f"  [Clean] Extracted code from JSON response ({key})")
+                            return self._strip_inner_fences(parsed[key]).strip()
+                    # Last resort: if there's exactly one string value, use it
+                    string_values = [(k, v) for k, v in parsed.items()
+                                     if isinstance(v, str) and len(v.strip()) > 50]
+                    if len(string_values) == 1:
+                        key, val = string_values[0]
+                        print(f"  [Clean] Extracted code from JSON response (single key: {key})")
+                        return self._strip_inner_fences(val).strip()
+                    # JSON parsed but no extractable code found
                     raise ValueError(
-                        f"Generated code is JSON but 'code' field is missing or empty. "
+                        f"Generated code is JSON but no code field found. "
                         f"Parsed keys: {list(parsed.keys())}"
                     )
             except json.JSONDecodeError:
@@ -476,6 +482,22 @@ class ProviderGenerator:
 
         return code
     
+    def _strip_inner_fences(self, code: str) -> str:
+        """Strip markdown code fences from a string extracted from JSON."""
+        code = code.strip()
+        for prefix in [
+            "```javascript", "```typescript", "```json",
+            "```kotlin", "```python",
+            "```js", "```ts", "```go", "```java", "```py",
+            "```"
+        ]:
+            if code.startswith(prefix):
+                code = code[len(prefix):]
+                break
+        if code.endswith("```"):
+            code = code[:-3]
+        return code
+
     def _validate_generated_code(
         self, code: str, expected_states: list, language: str = "javascript"
     ) -> tuple:
