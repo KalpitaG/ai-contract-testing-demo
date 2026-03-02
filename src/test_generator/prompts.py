@@ -82,18 +82,26 @@ You ONLY generate consumer-side Pact tests. You never generate provider verifica
 
 10. **Error Handling in Tests**: Only generate error/404 tests if the consumer function has explicit try/catch that returns null or a default value. If the function has no try/catch, a 404 will throw an exception — do not test for null returns in that case. Default to testing success cases only.
 
-11. **Test Count Per Endpoint**: Generate at least 2 interactions per endpoint group when the API supports it:
+11. **Error Response Bodies**: When generating a 404/error test, examine what the consumer code does with the error response:
+    - If the consumer catches by STATUS CODE ONLY (e.g., `error.response.status === 404`) and returns null/throws without reading the body → `willRespondWith` must ONLY specify `status: 404`. Do NOT include a `body` field. The consumer does not use the error body, so the pact must not assert on it.
+    - If the consumer reads `error.response.data.message` or similar field → include only that field as a matcher.
+    - NEVER guess error body fields like `{message: "..."}` or `{error: "..."}`. Only include fields the consumer code actually reads.
+
+    WRONG (consumer ignores body): willRespondWith({ status: 404, body: { message: string("Not found") } })
+    RIGHT (consumer ignores body): willRespondWith({ status: 404 })
+
+12. **Test Count Per Endpoint**: Generate at least 2 interactions per endpoint group when the API supports it:
     - One happy-path interaction (e.g., GET /items returns a list)
     - One alternative-path interaction (e.g., GET /items?inStock=true returns filtered list, or POST /items creates an item)
     This is NOT exhaustive scenario testing — it verifies the contract shape under the most common usage patterns. For simple endpoints with only one usage pattern (e.g., DELETE /items/:id), one interaction is sufficient.
 
 ## STYLE — Improves maintainability
 
-12. **File Organization**: Group tests by API domain (e.g., `items-api.pact.test.js`, `categories-api.pact.test.js`, `users-api.pact.test.js`). All files use the same consumer/provider names and merge into one pact.
+13. **File Organization**: Group tests by API domain (e.g., `items-api.pact.test.js`, `categories-api.pact.test.js`, `users-api.pact.test.js`). All files use the same consumer/provider names and merge into one pact.
 
-13. **Interaction Descriptions**: Use clear, unique `uponReceiving` strings that describe what the consumer expects. Format: "a request to [action]" (e.g., "a request to get all items", "a request to create an item").
+14. **Interaction Descriptions**: Use clear, unique `uponReceiving` strings that describe what the consumer expects. Format: "a request to [action]" (e.g., "a request to get all items", "a request to create an item").
 
-14. **Assertions in executeTest**: After calling the consumer function, assert the returned data to confirm the consumer correctly processes the response. At minimum, check that the result is defined and has expected structure.
+15. **Assertions in executeTest**: After calling the consumer function, assert the returned data to confirm the consumer correctly processes the response. At minimum, check that the result is defined and has expected structure.
 
 # Language Examples
 
@@ -161,6 +169,23 @@ describe('Items API Contract', () => {
             const result = await createItem(mockProvider.url, newItem);
             expect(result).toBeDefined();
             expect(result.id).toBeDefined();
+        });
+    });
+
+    // 404 test — consumer catches status code only, does NOT read body
+    // So willRespondWith has status ONLY, no body field
+    test('user not found returns null', async () => {
+        provider
+            .given('user 999 does not exist')
+            .uponReceiving('a request to get a non-existent user')
+            .withRequest({ method: 'GET', path: '/users/999' })
+            .willRespondWith({
+                status: 404,
+            });
+
+        await provider.executeTest(async (mockProvider) => {
+            const result = await getUserById(mockProvider.url, 999);
+            expect(result).toBeNull();
         });
     });
 });

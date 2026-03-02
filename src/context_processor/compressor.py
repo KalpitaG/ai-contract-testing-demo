@@ -374,10 +374,23 @@ Example Structure:
                 if param_names:
                     lines.append(f"    Params: {', '.join(param_names)}")
             
-            # Response codes only
+            # Response codes with body schemas for non-2xx
             if ep.responses:
-                codes = list(ep.responses.keys())[:4]
-                lines.append(f"    Responses: {', '.join(str(c) for c in codes)}")
+                resp_parts = []
+                for code, resp_data in list(ep.responses.items())[:4]:
+                    code_str = str(code)
+                    if isinstance(resp_data, dict) and resp_data.get("schema"):
+                        schema = resp_data["schema"]
+                        # Include schema properties for error responses
+                        props = schema.get("properties", {})
+                        if props:
+                            fields = ", ".join(f"{k}: {v.get('type', '?')}" for k, v in list(props.items())[:5])
+                            resp_parts.append(f"{code_str} ({fields})")
+                        else:
+                            resp_parts.append(code_str)
+                    else:
+                        resp_parts.append(code_str)
+                lines.append(f"    Responses: {', '.join(resp_parts)}")
         
         # Schemas (names only, not full definitions)
         if openapi_ctx.schemas:
