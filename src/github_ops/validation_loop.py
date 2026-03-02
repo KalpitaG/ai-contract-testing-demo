@@ -54,9 +54,9 @@ class ValidationResult:
     def get_status_message(self) -> str:
         """Get a human-readable status message."""
         if self.tests_pass:
-            return f"✅ Tests passed on attempt {self.attempts}"
+            return f"Tests passed on attempt {self.attempts}"
         else:
-            return f"❌ Tests failed after {self.attempts} attempt(s)"
+            return f"Tests failed after {self.attempts} attempt(s)"
 
 
 class ValidationLoop:

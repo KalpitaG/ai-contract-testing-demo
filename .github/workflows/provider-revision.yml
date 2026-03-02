@@ -34,6 +34,11 @@ on:
         description: 'The full comment body starting with ai-revise:'
         required: true
         type: string
+      comment_id:
+        description: 'GitHub comment ID for immediate reaction'
+        required: false
+        type: number
+        default: 0
     secrets:
       GEMINI_API_KEY:
         required: true
@@ -63,6 +68,13 @@ jobs:
       revision_count: ${{ steps.check.outputs.revision_count }}
 
     steps:
+      - name: Acknowledge Revision Request
+        if: inputs.comment_id != 0
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          gh api repos/${{ inputs.repository }}/issues/comments/${{ inputs.comment_id }}/reactions -f content=eyes --silent || true
+
       - name: Validate and Extract Info
         id: check
         env:
@@ -87,7 +99,7 @@ jobs:
               "**ai-revise** only works on open PRs. This PR is $PR_STATE.
 
               ---
-              *AI Contract Testing*"
+              *— AI Contract Testing*"
             exit 0
           fi
 
@@ -102,7 +114,7 @@ jobs:
               This PR branch (\`$HANDLER_BRANCH\`) is not a handler branch.
 
               ---
-              *AI Contract Testing*"
+              *— AI Contract Testing*"
             exit 0
           fi
 
@@ -132,16 +144,16 @@ jobs:
             echo "should_revise=false" >> $GITHUB_OUTPUT
 
             gh pr comment ${{ inputs.handler_pr_number }} --repo ${{ inputs.repository }} --body \
-              "## Maximum Revisions Reached
+              "## ⚠️ Maximum Revisions Reached
 
-              You've used all **3 AI revisions** for this PR.
+              All **3 AI revision attempts** have been used for this PR.
 
-              **Options:**
+              **Next steps:**
               1. Edit the handlers manually
               2. Close this PR and re-trigger verification on the feature PR
 
               ---
-              *AI Contract Testing*"
+              *— AI Contract Testing*"
             exit 0
           fi
 
@@ -196,13 +208,13 @@ jobs:
           gh pr comment ${{ inputs.handler_pr_number }} --repo ${{ inputs.repository }} --body \
             "## Processing Revision $REVISION_NUM/3
 
-            **Your feedback:**
+            **Feedback:**
             > ${{ needs.validate-and-extract.outputs.feedback }}
 
-            Revising handlers... This may take a minute.
+            Revising handlers based on the above feedback. This may take a minute.
 
             ---
-            *AI Contract Testing*"
+            *— AI Contract Testing*"
 
       - name: Revise Handlers with AI
         id: revise
@@ -490,20 +502,17 @@ jobs:
           REMAINING=$((3 - REVISION_NUM))
 
           gh pr comment ${{ inputs.handler_pr_number }} --repo ${{ inputs.repository }} --body \
-            "## Revision $REVISION_NUM Complete — Handlers Verified!
+            "## ✅ Revision $REVISION_NUM Complete — Handlers Verified
 
-            I've revised the state handlers based on your feedback and verification **passed**.
+            State handlers were revised based on your feedback and verification **passed**.
 
-            **Your feedback was:**
+            **Feedback applied:**
             > ${{ needs.validate-and-extract.outputs.feedback }}
 
-            Please review the updated code.
-
-            If you need more changes, comment \`ai-revise: <feedback>\` ($REMAINING revisions remaining).
-            If satisfied, **merge this PR** into your branch!
+            Review the updated code and merge when ready. If further changes are needed, comment \`ai-revise: <feedback>\` ($REMAINING revisions remaining).
 
             ---
-            *AI Contract Testing*"
+            *— AI Contract Testing*"
 
       - name: Comment - Revision Succeeded + Verification Failed
         if: |
@@ -516,19 +525,19 @@ jobs:
           REMAINING=$((3 - REVISION_NUM))
 
           gh pr comment ${{ inputs.handler_pr_number }} --repo ${{ inputs.repository }} --body \
-            "## Revision $REVISION_NUM Complete — Verification Failed
+            "## ⚠️ Revision $REVISION_NUM Complete — Verification Failed
 
-            I've revised the state handlers but verification **failed**.
+            State handlers were revised but verification **failed**.
 
-            **Your feedback was:**
+            **Feedback applied:**
             > ${{ needs.validate-and-extract.outputs.feedback }}
 
-            The handlers have been committed for your review. You may need to:
+            The updated handlers have been committed for review. Next steps:
             1. Fix issues manually
             2. Comment \`ai-revise: <more specific feedback>\` ($REMAINING revisions remaining)
 
             ---
-            *AI Contract Testing*"
+            *— AI Contract Testing*"
 
       - name: Comment - Revision Failed
         if: needs.revise-handlers.outputs.revision_success != 'true'
@@ -536,13 +545,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
           gh pr comment ${{ inputs.handler_pr_number }} --repo ${{ inputs.repository }} --body \
-            "## Revision Failed
+            "## ❌ Revision Failed
 
-            I couldn't revise the handlers. This might be due to:
+            Handler revision was unsuccessful. Possible causes:
+            - AI generation error
             - API rate limits
-            - AI generation errors
 
-            Please check the workflow logs or try again later.
+            Check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.
 
             ---
-            *AI Contract Testing*"
+            *— AI Contract Testing*"

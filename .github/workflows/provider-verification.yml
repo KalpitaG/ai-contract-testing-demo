@@ -142,18 +142,18 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
           gh pr comment ${{ inputs.pr_number }} --repo ${{ inputs.repository }} --body \
-            "## 🔄 Provider Verification Starting
+            "## Provider Verification Starting
 
             **Provider:** \`${{ steps.resolve-name.outputs.provider_name }}\`
 
             Steps:
-            1. ⏳ Fetching pacts from Pactflow...
-            2. ⏳ Analyzing provider code...
-            3. ⏳ AI generating state handlers...
-            4. ⏳ Running verification...
+            1. Fetching pacts from Pactflow
+            2. Analyzing provider code
+            3. AI generating state handlers
+            4. Running verification
 
             ---
-            *AI Contract Testing*"
+            *— AI Contract Testing*"
 
       - name: Generate Provider Tests
         id: generate
@@ -590,7 +590,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
           gh pr comment ${{ inputs.pr_number }} --repo ${{ inputs.repository }} --body \
-            "## Provider Test Generation Failed
+            "## ❌ Provider Test Generation Failed
 
             **Provider:** \`${{ needs.generate-provider-tests.outputs.resolved_provider_name }}\`
 
@@ -599,10 +599,10 @@ jobs:
             - AI generation error
             - Provider code analysis failed
 
-            Check the workflow logs for details.
+            Check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.
 
             ---
-            *AI Contract Testing*"
+            *— AI Contract Testing*"
 
       - name: Comment - Verification Passed
         if: needs.run-verification.outputs.verification_passed == 'true' && inputs.pr_number != 0
@@ -613,18 +613,16 @@ jobs:
           CONSUMERS='${{ needs.generate-provider-tests.outputs.consumers }}'
 
           gh pr comment ${{ inputs.pr_number }} --repo ${{ inputs.repository }} --body \
-            "## Provider Verification PASSED
+            "## ✅ Provider Verification Passed
 
             **Provider:** \`${{ needs.generate-provider-tests.outputs.resolved_provider_name }}\`
             **Consumers:** $CONSUMERS
-            **States Verified:** $STATES
+            **States verified:** $STATES
 
-            All consumer contracts are satisfied!
-
-            Results have been published to Pactflow.
+            All consumer contracts are satisfied. Results have been published to Pactflow.
 
             ---
-            *AI Contract Testing*"
+            *— AI Contract Testing*"
 
       - name: Comment - Verification Failed (with analysis)
         if: needs.run-verification.outputs.verification_passed == 'false' && inputs.pr_number != 0
@@ -639,7 +637,7 @@ jobs:
             CONSUMERS='${{ needs.generate-provider-tests.outputs.consumers }}'
             ERROR='${{ needs.run-verification.outputs.verification_error }}'
 
-            COMMENT="## Provider Verification FAILED
+            COMMENT="## ❌ Provider Verification Failed
 
             **Provider:** \`${{ needs.generate-provider-tests.outputs.resolved_provider_name }}\`
             **Consumers:** $CONSUMERS
@@ -650,12 +648,12 @@ jobs:
             The provider does not satisfy all consumer contracts.
 
             **Next steps:**
-            1. Check the workflow logs for specific failures
+            1. Check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for specific failures
             2. Update provider to satisfy the contracts
             3. Or negotiate contract changes with consumers
 
             ---
-            *AI Contract Testing*"
+            *— AI Contract Testing*"
           fi
 
           # Post the comment (use heredoc for multi-line markdown)
@@ -697,16 +695,16 @@ jobs:
 
           if [ "$VERIFICATION" = "true" ]; then
             gh pr comment "$HANDLER_PR" --repo "$REPO" --body "$(cat <<'EOF'
-          ## ✅ Provider Verification PASSED
+          ## ✅ Provider Verification Passed
 
           **Provider:** `'"$PROVIDER"'`
           **Consumer(s):** '"$CONSUMERS"'
-          **States Verified:** '"$STATES"'
+          **States verified:** '"$STATES"'
 
-          All consumer contracts are satisfied! Review the generated handlers and merge when ready.
+          All consumer contracts are satisfied. Review the generated handlers and merge when ready.
 
           ---
-          *AI Contract Testing*
+          *— AI Contract Testing*
           EOF
           )"
           elif [ -f "analysis/analysis-comment.md" ]; then
@@ -715,7 +713,7 @@ jobs:
             gh pr comment "$HANDLER_PR" --repo "$REPO" --body "$COMMENT"
           else
             gh pr comment "$HANDLER_PR" --repo "$REPO" --body "$(cat <<'EOF'
-          ## ❌ Provider Verification FAILED
+          ## ❌ Provider Verification Failed
 
           **Provider:** `'"$PROVIDER"'`
           **Consumer(s):** '"$CONSUMERS"'
@@ -723,10 +721,10 @@ jobs:
 
           The provider does not satisfy all consumer contracts. Check the workflow logs for details.
 
-          You can use `ai-revise: <feedback>` to request changes to the generated handlers.
+          Use \`ai-revise: <feedback>\` to request changes to the generated handlers.
 
           ---
-          *AI Contract Testing*
+          *— AI Contract Testing*
           EOF
           )"
           fi
@@ -787,12 +785,15 @@ jobs:
           # Determine branch name and target
           if [ "$PR_NUM" != "0" ] && [ -n "$PR_NUM" ]; then
             # PR trigger: target the feature branch
-            TARGET_BRANCH=$(gh pr view "$PR_NUM" --repo "$REPO" --json headRefName -q '.headRefName')
+            PR_INFO=$(gh pr view "$PR_NUM" --repo "$REPO" --json headRefName,title)
+            TARGET_BRANCH=$(echo "$PR_INFO" | jq -r '.headRefName')
+            FEATURE_TITLE=$(echo "$PR_INFO" | jq -r '.title')
             HANDLER_BRANCH="contract-handlers/pr-${PR_NUM}"
             TRIGGER_TYPE="PR #${PR_NUM}"
           else
             # Webhook trigger: target main
             TARGET_BRANCH="main"
+            FEATURE_TITLE=""
             SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
             HANDLER_BRANCH="contract-handlers/auto-${SHORT_SHA}"
             TRIGGER_TYPE="webhook"
@@ -848,11 +849,18 @@ jobs:
             # Count number of states
             STATE_COUNT=$(echo "$STATES" | python3 -c "import sys,json; print(len(json.loads(sys.stdin.read())))" 2>/dev/null || echo "N/A")
 
+            # Build PR title with feature context
+            if [ -n "$FEATURE_TITLE" ]; then
+              PR_TITLE="AI State Handlers — ${FEATURE_TITLE} (#${PR_NUM})"
+            else
+              PR_TITLE="AI State Handlers — ${PROVIDER}"
+            fi
+
             PR_URL=$(gh pr create \
               --repo "$REPO" \
               --head "$HANDLER_BRANCH" \
               --base "$TARGET_BRANCH" \
-              --title "AI: Provider state handlers for ${PROVIDER}" \
+              --title "$PR_TITLE" \
               --body "$(cat <<PREOF
           ## AI-Generated Provider State Handlers
 
@@ -872,7 +880,7 @@ jobs:
           3. Future verifications will use these committed handlers (no AI regeneration needed)
 
           ---
-          *AI Contract Testing — Handler Persistence*
+          *— AI Contract Testing*
           PREOF
           )")
             echo "Created handler PR: $PR_URL"
