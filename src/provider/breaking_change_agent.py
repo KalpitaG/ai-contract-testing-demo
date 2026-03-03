@@ -619,21 +619,26 @@ class BreakingChangeAgent:
 
             for option in analysis.fix_options:
                 recommended = " (Recommended)" if option.option_number == 1 else ""
+                lines.append("")
+                lines.append("<details>")
                 lines.append(
-                    f"<details>\n"
                     f"<summary><strong>Option {option.option_number}: "
-                    f"{option.title}{recommended}</strong></summary>\n"
+                    f"{option.title}{recommended}</strong></summary>"
                 )
+                lines.append("")
                 lines.append(f"**Who changes:** {option.side.title()}")
-                lines.append(f"**Impact:** {option.impact}\n")
+                lines.append(f"**Impact:** {option.impact}")
+                lines.append("")
 
                 if option.code_suggestion:
                     lines.append("```")
                     lines.append(option.code_suggestion)
                     lines.append("```")
+                    lines.append("")
 
-                lines.append(f"\n{option.description}")
-                lines.append("\n</details>\n")
+                lines.append(option.description)
+                lines.append("")
+                lines.append("</details>")
 
         lines.append("---")
         lines.append("*AI Contract Testing — Breaking Change Agent*")

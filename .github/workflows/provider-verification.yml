@@ -611,18 +611,27 @@ jobs:
         run: |
           STATES='${{ needs.generate-provider-tests.outputs.provider_states }}'
           CONSUMERS='${{ needs.generate-provider-tests.outputs.consumers }}'
+          HANDLER_PR='${{ needs.persist-handlers.outputs.handler_pr_number }}'
 
-          gh pr comment ${{ inputs.pr_number }} --repo ${{ inputs.repository }} --body \
-            "## ✅ Provider Verification Passed
+          HANDLER_LINE=""
+          if [ -n "$HANDLER_PR" ] && [ "$HANDLER_PR" != "" ]; then
+            HANDLER_LINE="**State Handlers PR:** [#${HANDLER_PR}](${{ github.server_url }}/${{ inputs.repository }}/pull/${HANDLER_PR}) — review and merge the AI-generated handlers"
+          fi
 
-            **Provider:** \`${{ needs.generate-provider-tests.outputs.resolved_provider_name }}\`
-            **Consumers:** $CONSUMERS
-            **States verified:** $STATES
+          gh pr comment ${{ inputs.pr_number }} --repo ${{ inputs.repository }} --body "$(cat <<EOF
+          ## ✅ Provider Verification Passed
 
-            All consumer contracts are satisfied. Results have been published to Pactflow.
+          **Provider:** \`${{ needs.generate-provider-tests.outputs.resolved_provider_name }}\`
+          **Consumers:** $CONSUMERS
+          **States verified:** $STATES
+          ${HANDLER_LINE}
 
-            ---
-            *— AI Contract Testing*"
+          All consumer contracts are satisfied. Results have been published to Pactflow.
+
+          ---
+          *— AI Contract Testing*
+          EOF
+          )"
 
       - name: Comment - Verification Failed (with analysis)
         if: needs.run-verification.outputs.verification_passed == 'false' && inputs.pr_number != 0
@@ -747,6 +756,7 @@ jobs:
     if: |
       always() &&
       inputs.pr_number != 0 &&
+      needs.run-verification.outputs.verification_passed == 'true' &&
       needs.generate-provider-tests.outputs.tests_generated == 'true' &&
       needs.generate-provider-tests.outputs.generation_skipped != 'true'
     runs-on: ubuntu-latest
