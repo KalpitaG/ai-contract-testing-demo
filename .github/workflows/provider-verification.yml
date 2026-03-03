@@ -746,6 +746,7 @@ jobs:
     needs: [generate-provider-tests, run-verification]
     if: |
       always() &&
+      inputs.pr_number != 0 &&
       needs.generate-provider-tests.outputs.tests_generated == 'true' &&
       needs.generate-provider-tests.outputs.generation_skipped != 'true'
     runs-on: ubuntu-latest
