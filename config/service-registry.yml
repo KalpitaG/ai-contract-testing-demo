@@ -45,30 +45,6 @@ services:
       confidence: 1.0
       method: "manual"
       evidence: "Initial setup - provider demo repository"
-  
-  # ============================================
-  # Staffbase Services (to be added)
-  # ============================================
-  
-  # email-service:
-  #   consumer_of:
-  #     - email-content-convertor
-  #   provider_to: []
-  #   detection:
-  #     detected_at: null
-  #     confidence: null
-  #     method: "pending"
-  #     evidence: null
-  
-  # email-content-convertor:
-  #   consumer_of: []
-  #   provider_to:
-  #     - email-service
-  #   detection:
-  #     detected_at: null
-  #     confidence: null
-  #     method: "pending"
-  #     evidence: null
 
 # ============================================
 # Pact Naming Convention
@@ -80,9 +56,9 @@ services:
 # Examples:
 #   - pact-implementation → pact-provider-demo
 #     Pact name: "pact-implementation-pact-provider-demo"
-#   
-#   - email-service → email-content-convertor
-#     Pact name: "email-service-email-content-convertor"
+#
+#   - serviceA → serviceB
+#     Pact name: "serviceA-serviceB"
 #
 # This naming is used by:
 #   - Consumer tests (when publishing)
